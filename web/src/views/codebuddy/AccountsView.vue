@@ -14,6 +14,12 @@ const loaded = ref(false)
 const error = ref('')
 const busy = ref('')
 const enrolling = ref(false)
+const importing = ref(false)
+const importingBusy = ref(false)
+const importProfile = ref('cn-cli')
+const importTokens = ref('')
+const uploadBusy = ref(false)
+const uploadInput = ref<HTMLInputElement | null>(null)
 let active = false
 let generation = 0
 let poll: number | undefined
@@ -81,6 +87,72 @@ async function remove(item: CodeBuddyCredential) {
 
 const enabledOf = (item: CodeBuddyCredential) => item.enabled !== false && item.disabled !== true
 
+/** Closing the enrollment panel always re-reads the credential list. */
+function onEnrolled() {
+  enrolling.value = false
+  void refresh()
+}
+
+/**
+ * Batch import. The service takes JSON (`files: [{ name, content }]`), not
+ * multipart, so a plain file input plus FileReader is enough and the panel
+ * never needs a second upload channel.
+ */
+async function uploadFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const picked = Array.from(input.files ?? [])
+  input.value = ''
+  if (!picked.length) return
+  if (picked.length > 100) {
+    notify('一次最多上传 100 个凭证文件')
+    return
+  }
+  uploadBusy.value = true
+  try {
+    const files = await Promise.all(
+      picked.map(async (file) => ({ name: file.name, content: await file.text() })),
+    )
+    const result = await codebuddy<{ results: unknown[] }>('/admin/credentials/upload', 'POST', {
+      files,
+      replace: false,
+    })
+    await refresh()
+    notify(`已导入 ${result?.results?.length ?? files.length} 个凭证文件`)
+  } catch (cause) {
+    reportError(cause, '上传凭证失败')
+  } finally {
+    uploadBusy.value = false
+  }
+}
+
+/** Exchange refresh tokens for credentials; blank lines are dropped. */
+async function importTokensNow() {
+  const tokens = importTokens.value
+    .split(/[\s,]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+  if (!tokens.length) {
+    notify('请先粘贴至少一个 refresh token')
+    return
+  }
+  importingBusy.value = true
+  try {
+    const result = await codebuddy<{ results: unknown[] }>(
+      '/admin/credentials/refresh-import',
+      'POST',
+      { profile: importProfile.value, refresh_tokens: tokens },
+    )
+    importTokens.value = ''
+    importing.value = false
+    await refresh()
+    notify(`已导入 ${result?.results?.length ?? tokens.length} 个刷新令牌`)
+  } catch (cause) {
+    reportError(cause, '导入刷新令牌失败')
+  } finally {
+    importingBusy.value = false
+  }
+}
+
 onMounted(() => {
   active = true
   void refresh()
@@ -111,6 +183,18 @@ onBeforeUnmount(() => {
         <button class="button" :disabled="loading" @click="refresh">
           <RefreshCw :size="15" :class="{ spin: loading }" /><span>刷新凭证</span>
         </button>
+        <button class="button" :disabled="uploadBusy" @click="uploadInput?.click()">
+          <LoaderCircle v-if="uploadBusy" :size="15" class="spin" /><span>上传凭证</span>
+        </button>
+        <input
+          ref="uploadInput"
+          type="file"
+          accept=".json,application/json"
+          multiple
+          hidden
+          @change="uploadFiles"
+        />
+        <button class="button" @click="importing = !importing"><span>导入令牌</span></button>
         <button class="button primary" @click="enrolling = !enrolling">
           <UserPlus :size="15" /><span>接入账号</span>
         </button>
@@ -118,13 +202,39 @@ onBeforeUnmount(() => {
     </header>
 
     <section v-if="enrolling" class="section-panel">
-      <EnrollView
-        @finished="
-          enrolling = false
-          refresh()
-        "
-        @closed="enrolling = false"
-      />
+      <EnrollView @finished="onEnrolled" @closed="enrolling = false" />
+    </section>
+
+    <section v-if="importing" class="section-panel">
+      <div class="panel-head">
+        <h2>导入刷新令牌</h2>
+        <p class="subtle">由 CodeBuddy 服务把 refresh token 兑换成凭证；面板不保存令牌明文。</p>
+      </div>
+      <div class="form-field">
+        <label for="cb-import-profile">端点</label>
+        <select id="cb-import-profile" v-model="importProfile">
+          <option value="cn-cli">cn-cli</option>
+          <option value="cn-work">cn-work</option>
+          <option value="intl-cli">intl-cli</option>
+          <option value="intl-work">intl-work</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="cb-import-tokens">刷新令牌（每行一个，最多 50 个）</label>
+        <textarea
+          id="cb-import-tokens"
+          v-model="importTokens"
+          rows="6"
+          spellcheck="false"
+          placeholder="粘贴 refresh token，每行一个"
+        />
+      </div>
+      <div class="form-actions">
+        <button class="button primary" :disabled="importingBusy" @click="importTokensNow">
+          <LoaderCircle v-if="importingBusy" :size="15" class="spin" /><span>开始导入</span>
+        </button>
+        <button class="button" :disabled="importingBusy" @click="importing = false">取消</button>
+      </div>
     </section>
 
     <div v-if="error" class="error-banner" role="alert">
