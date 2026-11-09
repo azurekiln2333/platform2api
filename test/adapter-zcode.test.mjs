@@ -451,7 +451,8 @@ test("zcode adapter maps every documented console and legacy route", async (t) =
   await call("/claimable");
   await call("/selftest", { method: "POST", body: {} });
   await call("/accounts/identify", { method: "POST", body: {} });
-  await call("/accounts/update", { method: "POST", body: { label: "zc-acc-1" } });
+  await call("/accounts/add", { method: "POST", body: { jwt: "eyJ.test", label: "zc-acc-1" } });
+  await call("/accounts/update", { method: "POST", body: { label: "zc-acc-1", disabled: true } });
   await call("/health");
 
   assert.deepEqual(
@@ -489,6 +490,7 @@ test("zcode adapter maps every documented console and legacy route", async (t) =
       "GET /claimable",
       "POST /selftest",
       "POST /accounts/identify",
+      "POST /accounts/add",
       "POST /accounts/update",
       "GET /health",
     ],
