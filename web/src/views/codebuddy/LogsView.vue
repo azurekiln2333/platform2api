@@ -16,6 +16,10 @@ const cursor = ref<string | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
+const detail = ref<Record<string, unknown> | null>(null)
+const detailId = ref('')
+const detailBusy = ref('')
+const detailError = ref('')
 let active = false
 let generation = 0
 
@@ -53,6 +57,38 @@ function select(next: (typeof KINDS)[number]['key']) {
   kind.value = next
   cursor.value = null
   void refresh(true)
+}
+
+/**
+ * Request detail. A cleaned-up entry stays a 404 and an unavailable audit store
+ * stays a 503: neither is rendered as "no detail", which would look like an
+ * empty record.
+ */
+async function open(entry: Record<string, unknown>) {
+  const id = String(entry.id ?? '')
+  if (!id || detailBusy.value === id) return
+  detailBusy.value = id
+  try {
+    const result = await codebuddy<Record<string, unknown>>(`/admin/logs/${encodeURIComponent(id)}`)
+    if (!active) return
+    detail.value = result ?? null
+    detailId.value = id
+    detailError.value = ''
+  } catch (cause) {
+    if (!active) return
+    detail.value = null
+    detailId.value = id
+    detailError.value =
+      cause instanceof Error ? cause.message : '请求明细暂时无法确认，请检查审计存储状态'
+  } finally {
+    detailBusy.value = ''
+  }
+}
+
+function closeDetail() {
+  detail.value = null
+  detailId.value = ''
+  detailError.value = ''
 }
 
 const hasMore = computed(() => Boolean(cursor.value))
@@ -114,8 +150,28 @@ onBeforeUnmount(() => {
           <header>
             <strong class="mono">{{ entry.id ?? '—' }}</strong>
             <span class="group-tag">{{ summary(entry) }}</span>
+            <button
+              v-if="entry.id"
+              class="button"
+              :disabled="detailBusy === String(entry.id)"
+              @click="open(entry)"
+            >
+              <LoaderCircle v-if="detailBusy === String(entry.id)" :size="13" class="spin" />
+              <span>明细</span>
+            </button>
           </header>
           <pre>{{ JSON.stringify(entry, null, 2) }}</pre>
+
+          <div v-if="detailId === String(entry.id ?? '')" class="log-detail">
+            <div v-if="detailError" class="error-banner" role="alert">
+              <span>{{ detailError }}</span
+              ><button @click="closeDetail">关闭</button>
+            </div>
+            <template v-else-if="detail">
+              <pre>{{ JSON.stringify(detail, null, 2) }}</pre>
+              <button class="button" @click="closeDetail">收起明细</button>
+            </template>
+          </div>
         </li>
       </ul>
 
@@ -155,5 +211,10 @@ onBeforeUnmount(() => {
   color: var(--secondary);
   font-size: 12px;
   line-height: 1.6;
+}
+.log-detail {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
 }
 </style>
