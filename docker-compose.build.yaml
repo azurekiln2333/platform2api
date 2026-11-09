@@ -1,0 +1,29 @@
+# Local source build overlay. Compose merges this file on top of
+# docker-compose.yaml:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+#
+# The three services are built from their own checkouts, not from this repo.
+# Point the build contexts at the sibling repositories (R2: each service keeps
+# its independent repository and image).
+services:
+  platform2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: "${PLATFORM_IMAGE:-platform2api:local}"
+
+  cnb:
+    build:
+      context: ${CNB_BUILD_CONTEXT:-../cnb2api-panel}
+      dockerfile: Dockerfile
+
+  codebuddy:
+    build:
+      context: ${CODEBUDDY_BUILD_CONTEXT:-../codebuddy2api-main/codebuddy2api}
+      dockerfile: Dockerfile
+
+  zcode:
+    build:
+      context: ${ZCODE_BUILD_CONTEXT:-../zcode2api/ZCode2api}
+      dockerfile: Dockerfile

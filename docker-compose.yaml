@@ -1,0 +1,192 @@
+# platform2api unified deployment.
+#
+# Four applications, four containers, four independent data directories. Each
+# service keeps its own repository, image and model-call endpoint (R2, R7); the
+# panel only manages them over Compose DNS.
+#
+#   cp .env.example .env      # set PLATFORM_ADMIN_KEY and one token per service
+#   mkdir -p data/{panel,cnb/data,cnb/logs,codebuddy,zcode}
+#   docker compose pull       # or: docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+#   docker compose up -d
+#
+# Panel:      http://127.0.0.1:9000
+# CNB:        http://127.0.0.1:9002
+# CodeBuddy:  http://127.0.0.1:8787
+# ZCode:      http://127.0.0.1:12283
+name: ${COMPOSE_PROJECT_NAME:-platform2api}
+
+services:
+  platform2api:
+    image: "${PLATFORM_IMAGE:-platform2api:local}"
+    restart: unless-stopped
+    init: true
+    environment:
+      PLATFORM_HOST: 0.0.0.0
+      PLATFORM_PORT: "9000"
+      PLATFORM_DATA_DIR: /app/data
+      # Compose DNS: the panel never uses loopback defaults inside a container.
+      CNB_URL: http://cnb:9002
+      CODEBUDDY_URL: http://codebuddy:8787
+      ZCODE_URL: http://zcode:12283
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY:?set PLATFORM_ADMIN_KEY in .env}
+      PLATFORM_PUBLIC_URL: ${PLATFORM_PUBLIC_URL:-}
+      # Bearer token each service accepts on its management routes. Empty means
+      # the corresponding service patch is not deployed yet.
+      CNB_PLATFORM_TOKEN: ${CNB_PLATFORM_TOKEN:-}
+      CODEBUDDY_PLATFORM_TOKEN: ${CODEBUDDY_PLATFORM_TOKEN:-}
+      ZCODE_PLATFORM_TOKEN: ${ZCODE_PLATFORM_TOKEN:-}
+      PLATFORM_SSO_ENABLED: ${PLATFORM_SSO_ENABLED:-}
+      PLATFORM_KEY_LOGIN_ENABLED: ${PLATFORM_KEY_LOGIN_ENABLED:-}
+      PLATFORM_OIDC_ISSUER: ${PLATFORM_OIDC_ISSUER:-}
+      PLATFORM_OIDC_CLIENT_ID: ${PLATFORM_OIDC_CLIENT_ID:-}
+      PLATFORM_OIDC_CLIENT_SECRET: ${PLATFORM_OIDC_CLIENT_SECRET:-}
+      PLATFORM_OIDC_SCOPES: ${PLATFORM_OIDC_SCOPES:-}
+      PLATFORM_OIDC_PROVIDER_NAME: ${PLATFORM_OIDC_PROVIDER_NAME:-}
+      PLATFORM_OIDC_ALLOWED_SUBJECTS: ${PLATFORM_OIDC_ALLOWED_SUBJECTS:-}
+      PLATFORM_OIDC_ALLOWED_EMAILS: ${PLATFORM_OIDC_ALLOWED_EMAILS:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${PLATFORM_BIND_HOST:-127.0.0.1}:${PLATFORM_PORT:-9000}:9000"
+    volumes:
+      # Panel-owned state only: SSO settings, service URLs, account tags.
+      - ./data/panel:/app/data
+    depends_on:
+      cnb:
+        condition: service_started
+      codebuddy:
+        condition: service_started
+      zcode:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9000/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-platform2api}"
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  cnb:
+    image: "${CNB_IMAGE:-docker.cnb.cool/azurekiln/cnb2api-panel:latest}"
+    container_name: "${COMPOSE_PROJECT_NAME:-platform2api}-cnb"
+    restart: unless-stopped
+    init: true
+    environment:
+      PANEL_HOST: 0.0.0.0
+      PANEL_PORT: "9002"
+      PANEL_DATA_DIR: /app/data
+      PANEL_LOG_DIR: /app/logs
+      PANEL_ADMIN_KEY: ${CNB_PANEL_ADMIN_KEY:?set CNB_PANEL_ADMIN_KEY in .env}
+      GATEWAY_KEY: ${CNB_GATEWAY_KEY:?set CNB_GATEWAY_KEY in .env}
+      PANEL_PUBLIC_URL: ${CNB_PUBLIC_URL:-}
+      # Accepted only after the service-side PLATFORM_TOKEN patch lands.
+      PLATFORM_TOKEN: ${CNB_PLATFORM_TOKEN:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      # Model/inference traffic stays on the service's own endpoint (AC7).
+      - "${SERVICE_BIND_HOST:-127.0.0.1}:${CNB_PORT:-9002}:9002"
+    volumes:
+      - ./data/cnb/data:/app/data
+      - ./data/cnb/logs:/app/logs
+    healthcheck:
+      # /health reports worker readiness and stays 503 with an empty pool, so
+      # the console root is the container-liveness signal instead.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9002/',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+  codebuddy:
+    image: "${CODEBUDDY_IMAGE:-ghcr.io/azurekiln2333/codebuddy2api:latest}"
+    container_name: "${COMPOSE_PROJECT_NAME:-platform2api}-codebuddy"
+    restart: unless-stopped
+    init: true
+    environment:
+      CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-true}
+      PUBLIC_ORIGIN: ${CODEBUDDY_PUBLIC_ORIGIN:-}
+      OIDC_ISSUER: ${CODEBUDDY_OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${CODEBUDDY_OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${CODEBUDDY_OIDC_CLIENT_SECRET:-}
+      OIDC_REFRESH: ${CODEBUDDY_OIDC_REFRESH:-false}
+      ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}
+      CODEBUDDY2API_ALLOW_OPEN_NOAUTH: "true"
+      CODEBUDDY_AUTH_DIR: /data/auth
+      # Accepted only after the service-side PLATFORM_TOKEN patch lands.
+      PLATFORM_TOKEN: ${CODEBUDDY_PLATFORM_TOKEN:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${SERVICE_BIND_HOST:-127.0.0.1}:${CODEBUDDY_PORT:-8787}:8787"
+    volumes:
+      # One SQLite directory per instance, never shared (research limitation 3).
+      - ./data/codebuddy:/data/auth
+    healthcheck:
+      # The service exposes no liveness route; a TCP connect is the honest probe.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket,sys; s=socket.socket(); s.settimeout(3); sys.exit(0 if s.connect_ex(('127.0.0.1',8787))==0 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *logging
+
+  zcode:
+    image: "${ZCODE_IMAGE:-ghcr.io/azurekiln2333/zcode2api:latest}"
+    container_name: "${COMPOSE_PROJECT_NAME:-platform2api}-zcode"
+    restart: unless-stopped
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "12283"
+      ZCGW_DATA_DIR: /app/data
+      GATEWAY_KEY: ${ZCODE_GATEWAY_KEY:-}
+      # Leave empty for the current keyless local panel; set it for anything
+      # reachable beyond loopback.
+      PANEL_KEY: ${ZCODE_PANEL_KEY:-}
+      ZCODE_UPSTREAM_ORIGIN: ${ZCODE_UPSTREAM_ORIGIN:-https://zcode.z.ai}
+      ZCODE_MODEL: ${ZCODE_MODEL:-GLM-5.3-Flash}
+      # Accepted only after the service-side PLATFORM_TOKEN patch lands.
+      PLATFORM_TOKEN: ${ZCODE_PLATFORM_TOKEN:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${SERVICE_BIND_HOST:-127.0.0.1}:${ZCODE_PORT:-12283}:12283"
+    volumes:
+      - ./data/zcode:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+process.env.PORT+'/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
