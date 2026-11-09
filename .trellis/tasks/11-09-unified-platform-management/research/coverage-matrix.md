@@ -40,29 +40,33 @@
 
 Source: `research/cnb-management.md`. Routes relative to `src/app.mjs`. Envelope note: list endpoints return `{ accounts }`, item returns `{ account }`; mutations validate `Origin` when supplied; sessions are process-local and expire, so the adapter must handle re-auth.
 
+P3 status: adapter `src/adapters/cnb.mjs` and pages under `web/src/views/cnb/**` are implemented and covered by `test/adapter-cnb.test.mjs` (21 tests, including five that boot the real panel server and go through `/api/accounts`, `/api/overview`, `/api/p/cnb/*` and `/api/accounts/auth/cnb/*`). Rows marked `covered` cite a test that fails if that route contract breaks. `cnb-auth-2` is `deferred` with a recorded decision: CNB's `/api/oidc/*` is the *service console's own* browser login, not a management call, and the panel's admin login is P1's SSO (R13).
+
 | id | system | area | workflow | upstream | panel page | adapter | test | status | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| cnb-auth-1 | cnb | auth | panel key login -> service session | `POST /api/session` | — (panel server) | `call` | | todo | token patch replaces key login for panel-originated calls |
-| cnb-overview-1 | cnb | overview | overview cards (accounts, credit rates, hourly) | `GET /api/overview` | `web/src/views/cnb/OverviewView.vue` | `overview` | | todo | per-system card only; never blended (R10) |
-| cnb-accounts-1 | cnb | accounts | list accounts | `GET /api/accounts` | `web/src/views/cnb/AccountsView.vue` | `listAccounts` | | todo | `{ accounts }` |
-| cnb-accounts-2 | cnb | accounts | create account | `POST /api/accounts` | same | `call` | | todo | |
-| cnb-accounts-3 | cnb | accounts | edit / delete account | `PATCH,DELETE /api/accounts/:id` | same | `accountAction` | | todo | profile-level fields only |
-| cnb-accounts-4 | cnb | accounts | probe / inference probe | `POST /api/accounts/:id/probe`, `/inference-probe` | same | `accountAction` | | todo | upstream work; needs timeout + progress UI |
-| cnb-accounts-5 | cnb | accounts | quota refresh | `POST /api/accounts/:id/quota` | same | `accountAction` | | todo | |
-| cnb-accounts-6 | cnb | accounts | wake | `POST /api/accounts/:id/wake` | same | `accountAction` | | todo | |
-| cnb-accounts-7 | cnb | accounts | registration / pat / credentials actions | `POST /api/accounts/:id/{registration,pat,credentials}` | same | `accountAction` | | todo | reveals secrets; mask by default |
-| cnb-models-1 | cnb | models | model list | `GET /api/models` | `web/src/views/cnb/ModelsView.vue` | `call` | | todo | `{ models }` |
-| cnb-usage-1 | cnb | usage | credit rates | `GET /api/credits/rates` | `web/src/views/cnb/UsageView.vue` | `call` | | todo | |
-| cnb-usage-2 | cnb | usage | usage history | `GET /api/usage/history` | same | `call` | | todo | |
-| cnb-usage-3 | cnb | usage | usage comparison | `GET,POST /api/usage/comparison` | same | `call` | | todo | |
-| cnb-settings-1 | cnb | settings | read/update settings | `GET,PATCH /api/settings` | `web/src/views/cnb/SettingsView.vue` | `call` | | todo | `{ settings }` |
-| cnb-logs-1 | cnb | logs | request logs (+detail) | `GET /api/logs/requests`, `/logs/requests/:id` | `web/src/views/cnb/LogsView.vue` | `call` | | todo | offset pagination |
-| cnb-logs-2 | cnb | logs | audit logs | `GET /api/logs/audit` | same | `call` | | todo | |
-| cnb-logs-3 | cnb | logs | system logs | `GET /api/logs/system` | same | `call` | | todo | |
-| cnb-logs-4 | cnb | logs | log export | `GET /api/logs` (export) | same | `call` | | todo | stream to file, not memory |
-| cnb-access-1 | cnb | access | gateway key read (masked) | `GET /api/access` | `web/src/views/cnb/AccessView.vue` | `call` | | todo | |
-| cnb-access-2 | cnb | access | gateway key rotate/reveal | `POST /api/access/key` | same | `call` | | todo | explicit confirm before reveal |
-| cnb-auth-2 | cnb | auth | OIDC login/callback | `/api/oidc/*` | — | — | | todo | stays service-owned; record decision |
+| cnb-auth-1 | cnb | auth | panel key login -> service session | `POST /api/session` | — (panel server) | `service()` bearer | adapter-cnb: bearer on every call | covered | token patch replaces key login for panel-originated calls; no `Origin` is sent so mutations skip the CSRF branch |
+| cnb-overview-1 | cnb | overview | overview cards (accounts, credit rates, hourly) | `GET /api/overview` | `web/src/views/cnb/OverviewView.vue` | `overview` | adapter-cnb: overview quota | covered | per-system card only; never blended (R10) |
+| cnb-accounts-1 | cnb | accounts | list accounts | `GET /api/accounts` | `web/src/views/cnb/AccountsView.vue` | `listAccounts` | adapter-cnb: list shape | covered | adapter unwraps `{ accounts }` into the bare array the panel aggregates |
+| cnb-accounts-2 | cnb | accounts | create account | `POST /api/accounts` | same | `startAuth`/`pollAuth` | adapter-cnb: enrollment creates the account | covered | console has no blank-create form; the panel creates during enrollment |
+| cnb-accounts-3 | cnb | accounts | edit / delete account | `PATCH,DELETE /api/accounts/:id` | same | `accountAction` | adapter-cnb: account actions | covered | profile-level fields only |
+| cnb-accounts-4 | cnb | accounts | probe / inference probe | `POST /api/accounts/:id/probe`, `/inference-probe` | same | `accountAction` | adapter-cnb: account actions | covered | upstream work; page shows a busy state per row |
+| cnb-accounts-5 | cnb | accounts | quota refresh | `POST /api/accounts/:id/quota` | same | `accountAction` | adapter-cnb: account actions | covered | |
+| cnb-accounts-6 | cnb | accounts | wake | `POST /api/accounts/:id/wake` | same | `accountAction` | adapter-cnb: account actions | covered | |
+| cnb-accounts-7 | cnb | accounts | registration / pat / credentials actions | `POST /api/accounts/:id/{registration,pat,credentials}` | same | `accountAction` | adapter-cnb: account actions | covered | reveals secrets; the page masks by default and reveals on demand |
+| cnb-models-1 | cnb | models | model list | `GET /api/models` | `web/src/views/cnb/ModelsView.vue` | `call` | adapter-cnb: management routes | covered | `{ models }`; passthrough keeps the envelope |
+| cnb-usage-1 | cnb | usage | credit rates | `GET /api/credits/rates` | `web/src/views/cnb/UsageView.vue` | `call` | adapter-cnb: management routes | covered | `window` query forwarded verbatim |
+| cnb-usage-2 | cnb | usage | usage history | `GET /api/usage/history` | same | `call` | adapter-cnb: management routes | covered | `days` query |
+| cnb-usage-3 | cnb | usage | usage comparison | `GET,POST /api/usage/comparison` | same | `call` | adapter-cnb: management routes | covered | both verbs mapped |
+| cnb-settings-1 | cnb | settings | read/update settings | `GET,PATCH /api/settings` | `web/src/views/cnb/SettingsView.vue` | `call` | adapter-cnb: management routes | covered | `{ settings }` |
+| cnb-logs-1 | cnb | logs | request logs (+detail) | `GET /api/logs/requests`, `/logs/requests/:id` | `web/src/views/cnb/LogsView.vue` | `call` | adapter-cnb: management routes | covered | offset pagination |
+| cnb-logs-2 | cnb | logs | audit logs | `GET /api/logs/audit` | same | `call` | adapter-cnb: management routes | covered | |
+| cnb-logs-3 | cnb | logs | system logs | `GET /api/logs/system` | same | `call` | adapter-cnb: management routes | covered | |
+| cnb-logs-4 | cnb | logs | log export | `GET /api/logs/requests?download=1` | same | `call` | adapter-cnb: management routes | covered | the page hands the export URL to the browser so the body is streamed, not buffered in memory |
+| cnb-access-1 | cnb | access | gateway key read (masked) | `GET /api/access` | `web/src/views/cnb/AccessView.vue` | `call` | adapter-cnb: management routes | covered | |
+| cnb-access-2 | cnb | access | gateway key rotate/reveal | `POST /api/access/key` | same | `call` | adapter-cnb: management routes | covered | explicit confirm before reveal |
+| cnb-settings-2 | cnb | settings | registration relay status + manual sync | `GET /api/registration-relay`, `POST /api/registration-relay/sync` | `web/src/views/cnb/SettingsView.vue` | `call` | adapter-cnb: management routes | covered | sync is long-running; page keeps the button disabled until it returns |
+| cnb-settings-3 | cnb | settings | service OIDC settings read/update | `GET,PATCH /api/auth/settings` | `web/src/views/cnb/SettingsView.vue` | `call` | adapter-cnb: management routes | covered | edits the *service* login config, not the panel's own SSO |
+| cnb-auth-2 | cnb | auth | OIDC login/callback | `/api/oidc/*` | — | — | — | deferred | stays service-owned: these are browser redirects for the CNB console's own login, not management calls. Panel admin login is P1's SSO (R13). No silent omission — recorded here so 3.3 can cite the decision. |
 
 ## CodeBuddy (owner P4)
 
@@ -98,31 +102,47 @@ P4 status: adapter `src/adapters/codebuddy.mjs` and pages under `web/src/views/c
 
 Source: `research/zcode-management.md`. Routes in `zcgw-server.mjs`. Envelope notes: `PATCH /api/accounts/:id` returns `{ ok, account }` (not CNB's full payload); settings write returns applied fields + resulting settings; several legacy root routes (`/keys`, `/logs`, `/pool/settings`, `/stats`, `/quota`, `/security`) supplement or duplicate console routes.
 
+P3 status: adapter `src/adapters/zcode.mjs` and pages under `web/src/views/zcode/**` are implemented and covered by `test/adapter-zcode.test.mjs` (16 tests, including five that boot the real panel server). Rows marked `covered` cite a test that fails if that route contract breaks. `zc-ops-2` stays `wip` on purpose: the legacy `/accounts/add|update` routes remain reachable for scripts, but the page uses the console `PATCH /api/accounts/:id` because the two envelopes disagree. `zc-auth-2` is `deferred` with a recorded decision: the panel authenticates with `PLATFORM_TOKEN` only and must never depend on the unauthenticated `PANEL_KEY` mode.
+
+### P3 integration gaps (reported, not fixed here)
+
+These live outside P3's owned paths, so they are recorded instead of patched:
+
+1. `src/overview.mjs` (P1) nests adapter output as `{ system, ok, health, overview }`, but `web/src/systems.ts` (P2) reads `accounts` / `quota` / `usage` / `health` from the section **top level**. Overview cards therefore render empty even though `/api/overview` carries the right data (proved by the panel tests). Fix belongs to P1 (flatten) or P2 (read `.overview`).
+2. Even after (1) is fixed, `systemCard` looks for a string `health`, but P1 emits `{ status, detail }`. `normalizeHealth` returns `'unknown'` for an object, so every card would still show an unknown/offline health chip. Either P1 flattens `health: health.status` + `healthMessage: health.detail`, or P2 reads `health.status`.
+3. The panel has no route that streams binary exports, so both log-export buttons hand a URL to the browser (`/api/p/<system>/api/logs?...&download=1`). That works for same-origin session cookies but is untested end-to-end — a Playwright case belongs to P2's smoke suite.
+
 | id | system | area | workflow | upstream | panel page | adapter | test | status | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| zc-auth-1 | zcode | auth | panel-originating management auth | `PLATFORM_TOKEN` bearer | — (panel server) | `call` | | todo | must not rely on `PANEL_KEY` being unset |
-| zc-overview-1 | zcode | overview | overview (accounts, scheduler, usage) | `GET /api/overview` | `web/src/views/zcode/OverviewView.vue` | `overview` | | todo | per-system card only (R10) |
-| zc-accounts-1 | zcode | accounts | account patch | `PATCH /api/accounts/:id` | `web/src/views/zcode/AccountsView.vue` | `accountAction` | | todo | `{ ok, account }` |
-| zc-accounts-2 | zcode | accounts | refresh account | refresh subroute on `/api/accounts/:id` | same | `accountAction` | | todo | upstream work |
-| zc-accounts-3 | zcode | accounts | background self-test | self-test subroute | same | `accountAction` | | todo | long-running; progress UI |
-| zc-accounts-4 | zcode | accounts | claim / claim subroutes | claim subroutes | same | `accountAction` | | todo | |
-| zc-enroll-1 | zcode | enrollment | onboard start | `POST /api/onboard/start` | `web/src/views/zcode/EnrollView.vue` | `startAuth` | | todo | provider-aware flow |
-| zc-enroll-2 | zcode | enrollment | onboard poll | `GET /api/onboard/poll/:flowId` | same | `pollAuth` | | todo | keep flowId across reloads |
-| zc-enroll-3 | zcode | enrollment | onboard redeem | `POST /api/onboard/redeem` | same | `call` | | todo | |
-| zc-models-1 | zcode | models | model list (configured/discovered/eligible) | `GET /api/models` | `web/src/views/zcode/ModelsView.vue` | `call` | | todo | `{ models }` |
-| zc-settings-1 | zcode | settings | patch settings | `PATCH /api/settings` | `web/src/views/zcode/SettingsView.vue` | `call` | | todo | returns applied + resulting |
-| zc-settings-2 | zcode | settings | legacy pool settings | `GET,POST /pool/settings` | same | `call` | | todo | decide console vs legacy source |
-| zc-logs-1 | zcode | logs | console logs (offset, export) | `GET /api/logs` | `web/src/views/zcode/LogsView.vue` | `call` | | todo | |
-| zc-logs-2 | zcode | logs | legacy logs | `GET /logs` | same | `call` | | todo | |
-| zc-access-1 | zcode | access | access metadata | `GET /api/access` | `web/src/views/zcode/AccessView.vue` | `call` | | todo | |
-| zc-access-2 | zcode | access | master key set/rotate | `POST /api/access/key` | same | `call` | | todo | explicit confirm |
-| zc-keys-1 | zcode | keys | key list | `GET /keys` | `web/src/views/zcode/KeysView.vue` | `call` | | todo | root path, not `/api/keys` |
-| zc-keys-2 | zcode | keys | key create | `POST /keys` | same | `call` | | todo | |
-| zc-keys-3 | zcode | keys | key update/delete/reset | `POST /keys/:id/{update,delete,reset}` | same | `call` | | todo | |
-| zc-ops-1 | zcode | ops | legacy stats/quota/security | `/stats`, `/quota`, `/security` | `web/src/views/zcode/OpsView.vue` | `call` | | todo | confirm which are still needed |
-| zc-ops-2 | zcode | ops | legacy account add/update | `/accounts/add`, `/accounts/update` | same | `call` | | todo | prefer console routes |
-| zc-deploy-1 | zcode | deploy | health check | `GET /health` | — (panel server) | `health` | | todo | already in service Compose |
-| zc-auth-2 | zcode | auth | optional `PANEL_KEY` mode | `POST /api/session` | — | `call` | | todo | doc only: panel must not depend on unauthenticated mode |
+| zc-auth-1 | zcode | auth | panel-originating management auth | `PLATFORM_TOKEN` bearer | — (panel server) | `service()` bearer | adapter-zcode: bearer on every call | covered | `PANEL_KEY` stays untouched; the panel authenticates with the bearer only |
+| zc-overview-1 | zcode | overview | overview (accounts, scheduler, usage) | `GET /api/overview` | `web/src/views/zcode/OverviewView.vue` | `overview` | adapter-zcode: overview quota | covered | per-system card only (R10). ZCode has **no** `GET /api/accounts`, so `listAccounts` reads this feed |
+| zc-accounts-1 | zcode | accounts | account patch | `PATCH /api/accounts/:id` | `web/src/views/zcode/AccountsView.vue` | `accountAction` | adapter-zcode: account actions | covered | returns `{ ok, account: <label> }`; adapter reports the label, not the patched record |
+| zc-accounts-2 | zcode | accounts | refresh account | `POST /api/accounts/:id/refresh` | same | `accountAction` | adapter-zcode: account actions | covered | upstream work; row shows a busy state |
+| zc-accounts-3 | zcode | accounts | background self-test | `POST /api/accounts/:id/selftest` -> 202 `{ jobId }` | same | `accountAction` | adapter-zcode: account actions | covered | long-running: the page polls `/api/accounts/:id/selftest/:jobId` |
+| zc-accounts-4 | zcode | accounts | claim start / claim | `POST /api/accounts/:id/claim-start`, `/claim` | same | `accountAction` | adapter-zcode: account actions | covered | two-step claim keeps the account id explicit |
+| zc-accounts-5 | zcode | accounts | self-test result poll | `GET /api/accounts/:id/selftest/:jobId` | same | `accountAction` | adapter-zcode: account actions | covered | terminal state ends the poll loop |
+| zc-accounts-6 | zcode | accounts | identify account from a credential | `POST /accounts/identify` | `web/src/views/zcode/AccountEditor.vue` | `call` | adapter-zcode: console and legacy routes | covered | legacy root route kept; used by the enrollment form |
+| zc-enroll-1 | zcode | enrollment | onboard start | `POST /api/onboard/start` | `web/src/views/zcode/EnrollView.vue` | `startAuth` | adapter-zcode: enrollment | covered | provider-aware flow (`zai` / `bigmodel`) |
+| zc-enroll-2 | zcode | enrollment | onboard poll | `GET /api/onboard/poll/:flowId` | same | `pollAuth` | adapter-zcode: enrollment | covered | native states map onto `pending|success|failed|expired`; 410 -> expired |
+| zc-enroll-3 | zcode | enrollment | onboard redeem | `POST /api/onboard/redeem` | same | `call` | adapter-zcode: console and legacy routes | covered | manual paste path when the browser callback is lost |
+| zc-enroll-4 | zcode | enrollment | claim automation read/update/run/cancel | `GET,PATCH /api/claim-automation`, `POST /api/claim-automation/{run,cancel}` | `web/src/views/zcode/EnrollView.vue` | `call` | adapter-zcode: console and legacy routes | covered | automation is service-owned; the panel only toggles it |
+| zc-models-1 | zcode | models | model list (configured/discovered/eligible) | `GET /api/models` | `web/src/views/zcode/ModelsView.vue` | `call` | adapter-zcode: console and legacy routes | covered | `{ models }` passthrough |
+| zc-settings-1 | zcode | settings | patch settings | `PATCH /api/settings` | `web/src/views/zcode/SettingsView.vue` | `call` | adapter-zcode: console and legacy routes | covered | returns applied fields + resulting settings; page merges both |
+| zc-settings-2 | zcode | settings | legacy pool settings | `GET,POST /pool/settings` | same | `call` | adapter-zcode: console and legacy routes | covered | resolution: read both, console wins; the legacy form writes back to `/pool/settings` when a script needs it |
+| zc-logs-1 | zcode | logs | console logs (q, outcome, offset) | `GET /api/logs` | `web/src/views/zcode/LogsView.vue` | `call` | adapter-zcode: console and legacy routes | covered | `{ logs, total }`; empty params are sent so the service keeps its defaults explicit |
+| zc-logs-2 | zcode | logs | legacy logs | `GET /logs` | same | `call` | adapter-zcode: console and legacy routes | covered | labelled in the page as "recent records only" so its shorter retention is not misread |
+| zc-logs-3 | zcode | logs | log export | `GET /api/logs?download=1` | same | `call` | adapter-zcode: console and legacy routes | covered | export URL goes to the browser; body is not buffered |
+| zc-access-1 | zcode | access | access metadata | `GET /api/access` | `web/src/views/zcode/AccessView.vue` | `call` | adapter-zcode: console and legacy routes | covered | masked by default |
+| zc-access-2 | zcode | access | master key set/rotate | `POST /api/access/key` | same | `call` | adapter-zcode: console and legacy routes | covered | explicit confirm before the call |
+| zc-keys-1 | zcode | keys | key list | `GET /keys` | `web/src/views/zcode/KeysView.vue` | `call` | adapter-zcode: console and legacy routes | covered | root path, not `/api/keys`; `openMode: true` means no master key and no active key, so the page warns |
+| zc-keys-2 | zcode | keys | key create | `POST /keys` | same | `call` | adapter-zcode: console and legacy routes | covered | the plaintext secret is returned exactly once, so the page forces a copy-and-confirm dialog |
+| zc-keys-3 | zcode | keys | key update/delete/reset | `POST /keys/:id/{update,delete,reset}` | `web/src/views/zcode/KeysView.vue` | `call` | adapter-zcode: console and legacy routes | covered | `reset` only zeroes `usedTokens`/`requests` (it does **not** rotate the secret — read `handleKeyReset`); `delete` is a soft delete. The page labels the button 清零 so nobody expects rotation |
+| zc-ops-1 | zcode | ops | legacy stats/quota/security | `/stats`, `/quota`, `/security` | `web/src/views/zcode/OpsView.vue` | `call` | adapter-zcode: console and legacy routes | covered | decision: still needed — `/stats` has the only per-model/token counters and `/security` has no console equivalent |
+| zc-ops-2 | zcode | ops | legacy account add/update | `/accounts/add`, `/accounts/update` | same | `call` | adapter-zcode: console and legacy routes | wip | kept reachable for scripts, but the page uses the console `PATCH /api/accounts/:id` instead (envelope mismatch: legacy returns a full record, console returns `{ ok, account }`) |
+| zc-ops-3 | zcode | ops | pool status / cooldown reset | `GET /pool`, `POST /pool/reset` | `web/src/views/zcode/OpsView.vue` | `call` | adapter-zcode: console and legacy routes | covered | reset is destructive-ish (clears cooldown + failure counts); page confirms by button label |
+| zc-ops-4 | zcode | ops | legacy self-test all | `POST /selftest` | same | `call` | adapter-zcode: console and legacy routes | covered | synchronous service call; the page shows the returned summary |
+| zc-deploy-1 | zcode | deploy | health check | `GET /health` | — (panel server) | `health` | adapter-zcode: health degrades to down | covered | already in service Compose; `health()` never throws so a dead service renders as `down` |
+| zc-auth-2 | zcode | auth | optional `PANEL_KEY` mode | `POST /api/session` | — | — | — | deferred | doc only: panel must not depend on the unauthenticated mode, so nothing is wired to it. Recorded here so 3.3 can cite the decision. |
 
 ## Shared / cross-cutting (owners P1 + P2)
 
