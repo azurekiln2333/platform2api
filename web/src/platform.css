@@ -1,0 +1,377 @@
+/*
+ * platform2api additions on top of the console shell copied from cnb2api-panel.
+ * Everything here reuses the shell's design tokens so the two stay visually aligned;
+ * keep this file additive and never restyle the copied base sheet above.
+ */
+
+/* ---- system badge (automatic system tag) ---- */
+.system-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.6px;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+.system-badge.compact {
+  min-width: 24px;
+  height: 16px;
+  font-size: 9px;
+  padding: 0 4px;
+}
+.system-badge.system-cnb {
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 16%, transparent);
+}
+.system-badge.system-codebuddy {
+  color: var(--violet);
+  background: var(--violet-soft);
+  border-color: color-mix(in srgb, var(--violet) 18%, transparent);
+}
+.system-badge.system-zcode {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: color-mix(in srgb, var(--green) 18%, transparent);
+}
+
+/* ---- per-system quota cards: always side by side, never merged ---- */
+.quota-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+@media (max-width: 1180px) {
+  .quota-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.quota-card {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 15px 16px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.quota-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.quota-card-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.quota-card-title > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.quota-card-title strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.quota-card-title small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quota-card-metric,
+.quota-card-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.quota-card-metric .eyebrow,
+.quota-card-usage .eyebrow {
+  letter-spacing: 0.9px;
+  font-size: 11px;
+}
+.quota-card .quota-numbers {
+  margin-top: 2px;
+}
+.quota-card .quota-track {
+  max-width: 100%;
+}
+.quota-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.quota-metrics li {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.quota-metrics strong,
+.quota-usage-list dd {
+  color: var(--text);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+.quota-metrics strong small {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 2px;
+}
+.quota-usage-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 12px;
+  margin: 4px 0 0;
+}
+.quota-usage-list > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+}
+.quota-usage-list dt {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quota-usage-list dd {
+  margin: 0;
+  font-size: 12px;
+}
+.quota-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.quota-card-footer .text-link {
+  font-size: 12px;
+}
+.health-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--secondary);
+  white-space: nowrap;
+}
+.overview-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0;
+}
+
+/* ---- tags ---- */
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+.tag-chips.compact {
+  gap: 4px;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  color: var(--secondary);
+  background: var(--surface);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-chip > button {
+  display: inline-flex;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  cursor: pointer;
+}
+.tag-chip > button:hover {
+  color: var(--red);
+}
+.tag-chip.system {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 22%, transparent);
+  background: var(--primary-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.tag-chip.ghost {
+  border-style: dashed;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tag-edit {
+  margin-top: 5px;
+  font-size: 12px;
+  height: 24px;
+  padding: 0 7px;
+}
+.tag-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 130px;
+}
+
+/* The unified account table has six columns: give tags and actions room to wrap
+ * instead of letting the action buttons overflow into the tag cell. */
+.account-table th:nth-child(5) {
+  width: 16%;
+}
+.account-table th:last-child {
+  width: 200px;
+}
+.account-table .row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
+}
+.tag-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+.tag-add label {
+  flex: 1;
+}
+.tag-suggestions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+/* ---- auth flow dialog ---- */
+.auth-steps {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.auth-steps li {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.auth-steps li p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.auth-steps .step-label b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 10px;
+  margin-right: 6px;
+}
+.auth-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+.auth-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 11px;
+}
+.auth-meta code {
+  font-size: 11px;
+}
+
+/* ---- settings page ---- */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1080px) {
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.settings-fields.readonly {
+  padding: 0 23px 20px;
+}
+.settings-fields.readonly > label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.settings-fields.readonly > label:last-child {
+  border-bottom: 0;
+}
+.settings-fields.readonly small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.settings-grid .button-group {
+  padding: 0 23px 20px;
+}
+
+/* ---- per-system sidebar sections ---- */
+.nav-caption.system-caption {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.page-pending-actions {
+  padding: 0 23px 20px;
+}
