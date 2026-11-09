@@ -68,7 +68,7 @@ error payload and never lets one service break another.
 | method | contract |
 | --- | --- |
 | `health()` | `{ status: "ok" \| "degraded" \| "down", detail? }`. Never throws for an expected outage; return `down` with `detail`. |
-| `overview()` | That system's own summary object. Must return native per-system numbers; the panel never sums across systems (R10). |
+| `overview()` | That system's own summary object, returned **flat** (design.md): `accounts`, `quota`, `usage`, `generatedAt`, any provider-specific extras. Never a blended or summed figure (R10). The panel adds `system`, `ok`, the normalized `health` string and `detail` next to these fields, and overrides any `health` the adapter returned. |
 | `listAccounts()` | `Array<{ nativeId, label, status, enabled?, quota?, tags?, raw? }>`. `nativeId` must be stable and URL-safe. `raw` is passed through to the console for provider-specific fields. |
 | `accountAction(nativeId, action, payload)` | Runs one provider-specific action (`probe`, `quota`, `wake`, `reveal`, `rotate`, …). `action` is a lowercase token; unknown actions throw `InputError(400)`. |
 | `startAuth(payload)` | `{ flowId, ...native }` for an interactive authorization/enrollment flow. |
@@ -95,6 +95,25 @@ throw new AdapterError("CodeBuddy 服务返回 503", { status: 502, code: "upstr
 snake_case token the console may branch on. Passthrough responses keep the
 service's own status, so `409` stays a revision conflict and is never retried
 blindly.
+
+## Console-facing overview shape
+
+`GET /api/overview` returns `{ generatedAt, cnb, codebuddy, zcode }`. Each system
+key is the adapter's flat payload plus the panel-owned fields:
+
+```js
+{
+  system: "cnb",
+  ok: true,                 // false when overview() failed
+  health: "ok",             // ok | degraded | down | unknown (plain string)
+  detail: "",               // health message, never an object
+  healthMessage: "",        // same value; the console reads this name
+  accounts: {...}, quota: {...}, usage: [...], generatedAt: "...",
+  error: { message, code, status? }   // only when ok === false
+}
+```
+
+A failing system keeps its own `error` and never affects the other keys.
 
 ## Registry
 

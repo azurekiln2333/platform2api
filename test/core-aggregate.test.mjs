@@ -9,6 +9,7 @@ import { AdapterError } from "../src/adapters/client.mjs";
 import { createStubAdapter } from "../src/adapters/_stub.mjs";
 import { createRegistry } from "../src/adapters/index.mjs";
 import { assertSafePath } from "../src/proxy.mjs";
+import { normalizeHealth, systemOverview } from "../src/overview.mjs";
 
 const ADMIN = "platform-test-admin-key";
 const tempDir = (t) => {
@@ -25,7 +26,15 @@ function fakeAdapter(system, overrides = {}) {
       return { status: "ok", detail: `${system} healthy` };
     },
     async overview() {
-      return { quota: { unit: system === "cnb" ? "credits" : "requests", remaining: 42 } };
+      // Mirrors the real adapters: one flat per-system payload, web-shaped.
+      return {
+        health: "ok",
+        healthMessage: "",
+        generatedAt: new Date().toISOString(),
+        accounts: { total: 1, ready: 1 },
+        quota: { label: `${system} 额度`, unit: system === "cnb" ? "credits" : "requests", remaining: 42 },
+        usage: [{ label: "今日请求", value: 3, unit: "次" }],
+      };
     },
     async listAccounts() {
       return [{ nativeId: "acct-1", label: `${system} account`, status: "ready", quota: { remaining: 5 } }];
@@ -128,14 +137,26 @@ test("overview keeps three independent sections and isolates failures", async (t
   assert.equal(result.body.zcode.ok, false);
   assert.equal(result.body.zcode.error.code, "internal_error");
   assert.equal(result.body.zcode.error.message, "服务读取失败");
+  // Health is a plain string with the message in its own field (design.md).
+  assert.equal(result.body.codebuddy.health, "degraded");
+  assert.equal(result.body.codebuddy.detail, "audit store unavailable");
+  assert.equal(result.body.codebuddy.error.code, "upstream_unavailable");
+  assert.equal(typeof result.body.codebuddy.health, "string");
 
   const ok = await panel(t);
   const healthy = await ok.request("/api/overview");
   assert.equal(healthy.status, 200);
   for (const system of ["cnb", "codebuddy", "zcode"]) {
-    assert.equal(healthy.body[system].ok, true);
-    assert.equal(healthy.body[system].system, system);
-    assert.equal(healthy.body[system].overview.quota.remaining, 42);
+    const section = healthy.body[system];
+    assert.equal(section.ok, true);
+    assert.equal(section.system, system);
+    assert.equal(section.health, "ok");
+    assert.equal(section.detail, `${system} healthy`);
+    // Flat payload: no nested `overview` wrapper (design.md).
+    assert.equal(section.overview, undefined);
+    assert.equal(section.quota.remaining, 42);
+    assert.equal(section.accounts.total, 1);
+    assert.equal(section.usage[0].label, "今日请求");
   }
   // Never a blended total across systems (R10).
   assert.equal(healthy.body.quota, undefined);
@@ -162,6 +183,7 @@ test("a failing system yields an error for that key only", async (t) => {
   assert.equal(result.body.codebuddy.ok, false);
   assert.equal(result.body.codebuddy.error.code, "upstream_unavailable");
   assert.match(result.body.codebuddy.error.message, /503/);
+  assert.equal(result.body.codebuddy.health, "ok");
 });
 
 test("unified account list carries the system tag and hides adapter secrets", async (t) => {
@@ -303,6 +325,32 @@ test("proxy path guard rejects dot segments and nested slashes", () => {
   assert.doesNotThrow(() => assertSafePath("/api/accounts/acct-1"));
 });
 
+test("overview health is a normalized string", async () => {
+  assert.equal(normalizeHealth({ status: "ok" }), "ok");
+  assert.equal(normalizeHealth({ status: "healthy", detail: "x" }), "ok");
+  assert.equal(normalizeHealth({ status: "degraded" }), "degraded");
+  assert.equal(normalizeHealth({ status: "down" }), "down");
+  assert.equal(normalizeHealth({ status: "offline" }), "down");
+  assert.equal(normalizeHealth("OK"), "ok");
+  assert.equal(normalizeHealth(undefined), "unknown");
+  assert.equal(normalizeHealth(null), "unknown");
+
+  const adapter = fakeAdapter("cnb", {
+    async health() {
+      return { status: "down", detail: "连接被拒绝" };
+    },
+    async overview() {
+      // A stale adapter-side health value must not win over the probe.
+      return { health: "ok", quota: { remaining: 1 } };
+    },
+  });
+  const section = await systemOverview(adapter);
+  assert.equal(section.health, "down");
+  assert.equal(section.detail, "连接被拒绝");
+  assert.equal(section.overview, undefined);
+  assert.equal(section.quota.remaining, 1);
+});
+
 test("registry falls back to a stub when a system module is absent", async () => {
   const registry = await createRegistry({
     systems: [{ system: "example", baseUrl: "http://example:1234", token: "" }],
@@ -341,7 +389,9 @@ test("stub adapters keep the panel bootable and report unavailable", async (t) =
   const body = await overview.json();
   assert.equal(body.cnb.ok, false);
   assert.equal(body.cnb.error.code, "adapter_not_implemented");
-  assert.equal(body.cnb.health.status, "down");
+  assert.equal(body.cnb.health, "down");
+  assert.equal(body.cnb.detail, "适配器尚未实现");
+  assert.equal(typeof body.cnb.health, "string");
 });
 
 test("authorization flows route to each system adapter", async (t) => {

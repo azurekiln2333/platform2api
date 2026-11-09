@@ -1,9 +1,37 @@
 import { AdapterError } from "./adapters/index.mjs";
 
-// Per-system overview. Each system keeps its own section and its own units;
-// values are never summed or blended across systems (R10). A failing system
-// yields `{ ok: false, error }` for that key only (sh-overview-2).
-const describeError = (error) => {
+// Per-system overview. Top level is `{ cnb, codebuddy, zcode }` (design.md):
+// each key holds that system's own flat payload. Values and units are never
+// summed or blended across systems (R10); a failing system yields `error` for
+// its own key only (sh-overview-2).
+
+export const HEALTH_VALUES = Object.freeze(["ok", "degraded", "down", "unknown"]);
+
+const HEALTH_TOKENS = {
+  ok: "ok",
+  healthy: "ok",
+  up: "ok",
+  ready: "ok",
+  degraded: "degraded",
+  warning: "degraded",
+  partial: "degraded",
+  down: "down",
+  offline: "down",
+  error: "down",
+  unavailable: "down",
+  unknown: "unknown",
+};
+
+// Health is a plain string so the console can render it directly. Adapters may
+// return `{ status, detail }` (contract) or an already-normalized string.
+export function normalizeHealth(value) {
+  if (typeof value === "string") return HEALTH_TOKENS[value.trim().toLowerCase()] || "unknown";
+  const status = value && typeof value === "object" ? value.status : undefined;
+  if (typeof status === "string") return HEALTH_TOKENS[status.trim().toLowerCase()] || "unknown";
+  return "unknown";
+}
+
+export const describeError = (error) => {
   if (error instanceof AdapterError || error?.name === "AdapterError")
     return {
       message: error.message,
@@ -16,20 +44,42 @@ const describeError = (error) => {
 };
 
 export async function systemOverview(adapter) {
-  const section = { system: adapter.system };
-  let health = null;
+  let health = "unknown";
+  let detail = "";
   try {
-    health = await adapter.health();
+    const probe = await adapter.health();
+    health = normalizeHealth(probe);
+    detail = typeof probe?.detail === "string" ? probe.detail : "";
   } catch (error) {
-    health = { status: "down", detail: describeError(error).message };
+    health = "down";
+    detail = describeError(error).message;
   }
+
   try {
-    const overview = await adapter.overview();
-    return { ...section, ok: true, health, overview };
+    const payload = await adapter.overview();
+    // Flat payload: adapter fields (accounts/quota/usage/generatedAt/...) stay
+    // top-level, never nested under an `overview` key (design.md).
+    const available = payload && typeof payload === "object" ? payload : {};
+    return {
+      system: adapter.system,
+      ok: true,
+      ...available,
+      health,
+      detail,
+      // The console reads healthMessage; detail is the design.md field name.
+      healthMessage: available.healthMessage || detail,
+    };
   } catch (error) {
     if (!(error instanceof AdapterError) && error?.name !== "InputError" && !error?.status)
       throw error;
-    return { ...section, ok: false, health, error: describeError(error) };
+    return {
+      system: adapter.system,
+      ok: false,
+      health,
+      detail,
+      healthMessage: detail,
+      error: describeError(error),
+    };
   }
 }
 
@@ -38,16 +88,20 @@ export async function buildOverview(registry) {
   // Systems are independent: a slow or broken service must not hide the others.
   const sections = await Promise.all(
     systems.map((system) =>
-      systemOverview(registry.get(system)).catch((error) => ({
-        system,
-        ok: false,
-        error: describeError(error),
-      })),
+      systemOverview(registry.get(system)).catch((error) => {
+        const described = describeError(error);
+        return {
+          system,
+          ok: false,
+          health: "unknown",
+          detail: described.message,
+          healthMessage: described.message,
+          error: described,
+        };
+      }),
     ),
   );
   const result = { generatedAt: new Date().toISOString() };
   for (const section of sections) result[section.system] = section;
   return result;
 }
-
-export { describeError };
