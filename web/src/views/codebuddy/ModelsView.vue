@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Copy, Layers, LoaderCircle, RefreshCw, Search, X } from '@lucide/vue'
-import { copy, reportError } from '../../panel.ts'
+import { copy, notify, reportError } from '../../panel.ts'
 import { codebuddy } from './service.ts'
 
 interface CodeBuddyModel {
@@ -16,6 +16,8 @@ const search = ref('')
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
+const scanning = ref(false)
+const probing = ref(false)
 let active = false
 let generation = 0
 let poll: number | undefined
@@ -61,12 +63,54 @@ async function remove(model: CodeBuddyModel) {
   if (!id) return
   if (!confirm(`删除模型 ${id}？`)) return
   try {
-    await codebuddy(`/admin/models/${encodeURIComponent(id)}`, 'DELETE', {
-      revision: revision.value,
-    })
+    // The service takes `revision` as a query parameter on DELETE.
+    const query = revision.value === null ? '' : `?revision=${revision.value}`
+    await codebuddy(`/admin/models/${id}${query}`, 'DELETE')
     await refresh()
+    notify('模型已删除')
   } catch (cause) {
     reportError(cause, '删除模型失败；若提示冲突请先刷新')
+  }
+}
+
+/** Creating a custom model is revision-aware, like every catalog write. */
+async function create() {
+  const publicId = prompt('新模型的公开 ID')
+  if (!publicId) return
+  try {
+    await codebuddy('/admin/models', 'POST', { public_id: publicId, revision: revision.value })
+    await refresh()
+    notify('模型已创建')
+  } catch (cause) {
+    reportError(cause, '创建模型失败；若提示冲突请先刷新')
+  }
+}
+
+/** One user-triggered catalog scan; the service never runs it periodically. */
+async function scan() {
+  scanning.value = true
+  try {
+    await codebuddy('/admin/models/scan', 'POST', {})
+    notify('已启动目录扫描')
+    await refresh()
+  } catch (cause) {
+    reportError(cause, '启动目录扫描失败')
+  } finally {
+    scanning.value = false
+  }
+}
+
+/** Probing every nominally free model can spend a little credit. */
+async function probe() {
+  if (!confirm('对所有标称免费模型各探测一次？若实际计费会消耗少量积分。')) return
+  probing.value = true
+  try {
+    await codebuddy('/admin/models/rate-probe', 'POST', {})
+    notify('已启动计费探测')
+  } catch (cause) {
+    reportError(cause, '启动计费探测失败')
+  } finally {
+    probing.value = false
   }
 }
 
@@ -97,6 +141,13 @@ onBeforeUnmount(() => {
         <p>目录版本 {{ revision ?? '—' }}；写入携带版本号，冲突时以服务返回的版本为准。</p>
       </div>
       <div class="heading-actions">
+        <button class="button" :disabled="scanning" @click="scan">
+          <LoaderCircle v-if="scanning" :size="15" class="spin" /><span>扫描目录</span>
+        </button>
+        <button class="button" :disabled="probing" @click="probe">
+          <LoaderCircle v-if="probing" :size="15" class="spin" /><span>计费探测</span>
+        </button>
+        <button class="button primary" @click="create"><span>新建模型</span></button>
         <button class="button" :disabled="loading" @click="refresh">
           <RefreshCw :size="15" :class="{ spin: loading }" /><span>刷新模型</span>
         </button>
