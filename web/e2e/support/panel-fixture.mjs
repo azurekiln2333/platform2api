@@ -131,6 +131,20 @@ const { server } = createPanelServer({
   dataDir,
   allowLocal: true,
   logger: { warn() {}, error() {}, info() {} },
+  // SSO is seeded with a loopback issuer that nothing listens on, so the login
+  // page shows the SSO entry point and the OIDC discovery failure notice is a
+  // real server response (no IdP fixture is needed for the shell test).
+  ssoBootstrap: {
+    enabled: true,
+    issuer: 'http://127.0.0.1:19399',
+    clientId: 'platform-shell-test',
+    clientSecret: 'platform-shell-secret',
+    scope: 'openid profile email',
+    providerName: '测试 SSO',
+    allowedSubjects: ['admin-subject-1'],
+    allowedEmails: ['admin@example.com'],
+    keyLoginEnabled: true,
+  },
   systems: ['cnb', 'codebuddy', 'zcode'].map((system) => ({
     system,
     baseUrl:

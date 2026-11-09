@@ -99,9 +99,12 @@ credits, 积分 and 点 stay separate.
 - `test/systems.test.mjs` — pure helpers: per-system cards (flat panel shape, `down` health) and error
   isolation, no summed totals, account/tag normalization, per-system account errors, settings
   `systems`/`services`/`serviceUrls`, filters, quota percent.
-- `e2e/smoke.spec.ts` — key login, three independent overview cards, unified account list with
-  system badge/filter/tag editing, panel-only authorization for all three systems, settings page,
-  route slot placeholder, sign-out. Runs against the real panel server via `e2e/support/panel-fixture.mjs`.
+- `e2e/smoke.spec.ts` — key login, SSO entry point + failure notice, three independent overview cards,
+  unified account list with system badge/filter/tag editing, panel-only authorization for all three
+  systems, settings page, route slot placeholder, sign-out. Runs against the real panel server via
+  `e2e/support/panel-fixture.mjs` (10 cases).
 
-Not covered here: the three real service containers (adapters are faked in the browser fixture), and
-per-system pages owned by P3/P4 beyond the sidebar/route-slot wiring.
+Not covered here: the three real service containers (adapters are faked in the browser fixture), a
+browser-side OIDC handshake against a live IdP (only the panel-side entry point and the failure notice
+are in Playwright; the full handshake is covered by `test/core-panel.test.mjs`), and per-system pages
+owned by P3/P4 beyond the sidebar/route-slot wiring.

@@ -136,3 +136,23 @@ test('signing out returns to the login form', async ({ page }) => {
   await page.getByRole('menuitem', { name: '退出登录', exact: true }).click()
   await expect(page.getByLabel('管理密钥', { exact: true })).toBeVisible()
 })
+
+test('the SSO entry point comes from the panel and its failure is reported', async ({ page }) => {
+  // `/api/auth/config` reports SSO enabled, so the login page offers it next to
+  // the key form (R13: admin key OR OIDC, no other role).
+  const config = await page.request.get('/api/auth/config')
+  const body = await config.json()
+  expect(body.sso.enabled).toBe(true)
+  expect(body.sso.loginUrl).toBe('/api/auth/oidc/login')
+  await page.goto('/')
+  const sso = page.getByRole('button', { name: /使用 测试 SSO 登录/ })
+  await expect(sso).toBeVisible()
+  // The panel owns the handshake; with an unreachable issuer it redirects back
+  // with `auth_error`, which the login page surfaces instead of hanging. The page
+  // removes the query param after reading it, so the notice is the assertion.
+  await sso.click()
+  await expect(page.locator('.login-form .form-error')).toContainText('无法连接单点登录服务', {
+    timeout: 15000,
+  })
+  await expect(page.getByLabel('管理密钥', { exact: true })).toBeVisible()
+})
