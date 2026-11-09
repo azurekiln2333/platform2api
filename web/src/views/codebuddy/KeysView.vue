@@ -16,6 +16,11 @@ const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
 const busy = ref('')
+const creating = ref(false)
+const createBusy = ref(false)
+const newName = ref('')
+const newType = ref<'user' | 'admin'>('user')
+const createdKey = ref('')
 let active = false
 let generation = 0
 
@@ -38,6 +43,36 @@ async function refresh() {
   } finally {
     if (active && request === generation) loading.value = false
   }
+}
+
+/** Creating a key returns its secret exactly once; it is never re-readable. */
+async function create() {
+  const name = newName.value.trim()
+  if (!name) {
+    notify('请先填写密钥名称')
+    return
+  }
+  createBusy.value = true
+  try {
+    const result = await codebuddy<{ key?: string }>('/admin/keys', 'POST', {
+      name,
+      type: newType.value,
+    })
+    createdKey.value = result?.key ?? ''
+    newName.value = ''
+    await refresh()
+    notify(createdKey.value ? '密钥已创建，请立即复制并妥善保存' : '密钥已创建')
+  } catch (cause) {
+    reportError(cause, '创建密钥失败')
+  } finally {
+    createBusy.value = false
+  }
+}
+
+/** Closing the create panel drops the one-time secret from memory too. */
+function closeCreate() {
+  creating.value = false
+  createdKey.value = ''
 }
 
 /** Revealing a secret is always explicit and never automatic. */
@@ -117,11 +152,41 @@ onBeforeUnmount(() => {
         <p>密钥由 CodeBuddy 服务持有；显示与轮换都是显式操作，不会自动展开。</p>
       </div>
       <div class="heading-actions">
+        <button class="button primary" @click="creating = !creating"><span>新建密钥</span></button>
         <button class="button" :disabled="loading" @click="refresh">
           <RefreshCw :size="15" :class="{ spin: loading }" /><span>刷新密钥</span>
         </button>
       </div>
     </header>
+
+    <section v-if="creating" class="section-panel">
+      <div class="panel-head">
+        <h2>新建密钥</h2>
+        <p class="subtle">密钥明文只在创建时返回一次，面板不会回显已保存的密钥。</p>
+      </div>
+      <div class="form-field">
+        <label for="cb-key-name">名称</label>
+        <input id="cb-key-name" v-model="newName" type="text" placeholder="例如 panel-automation" />
+      </div>
+      <div class="form-field">
+        <label for="cb-key-type">类型</label>
+        <select id="cb-key-type" v-model="newType">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+      </div>
+      <div v-if="createdKey" class="note-box">
+        <KeyRound :size="16" />
+        <code class="mono">{{ createdKey }}</code>
+        <button class="button" @click="copy(createdKey)">复制</button>
+      </div>
+      <div class="form-actions">
+        <button class="button primary" :disabled="createBusy" @click="create">
+          <LoaderCircle v-if="createBusy" :size="15" class="spin" /><span>创建</span>
+        </button>
+        <button class="button" :disabled="createBusy" @click="closeCreate">取消</button>
+      </div>
+    </section>
 
     <div v-if="external" class="note-box">
       <KeyRound :size="16" />
