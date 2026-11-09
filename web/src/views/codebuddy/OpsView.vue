@@ -6,14 +6,14 @@ import { codebuddy } from './service.ts'
 
 /**
  * Provider-specific operational surfaces. Media, storage/backups, updates and
- * account automation stay owned by the CodeBuddy service: the panel only calls
- * the existing `/admin/*` routes and never touches the service's data files.
+ * automation stay owned by the CodeBuddy service: the panel only calls the real
+ * `/admin/*` routes and never touches the service's data files.
  */
 const TABS = [
-  { key: 'media', label: '媒体' },
-  { key: 'storage', label: '存储与备份' },
-  { key: 'updates', label: '版本更新' },
-  { key: 'automation', label: '自动化' },
+  { key: 'media', label: '媒体', paths: ['/admin/media'] },
+  { key: 'storage', label: '存储与备份', paths: ['/admin/storage'] },
+  { key: 'updates', label: '版本更新', paths: ['/admin/update'] },
+  { key: 'automation', label: '自动化', paths: ['/admin/performance', '/admin/growth-jobs'] },
 ] as const
 
 const tab = ref<(typeof TABS)[number]['key']>('media')
@@ -22,6 +22,9 @@ const loading = ref(false)
 const busy = ref('')
 const error = ref('')
 let active = false
+
+const current = computed(() => TABS.find((entry) => entry.key === tab.value)!)
+const sources = computed<string[]>(() => [...current.value.paths])
 
 const TEXT = computed(() =>
   payload.value === null || payload.value === undefined
@@ -33,9 +36,12 @@ async function load() {
   if (loading.value) return
   loading.value = true
   try {
-    const result = await codebuddy<unknown>(`/admin/ops/${tab.value}`)
+    const results = await Promise.all(sources.value.map(async (path) => codebuddy<unknown>(path)))
     if (!active) return
-    payload.value = result
+    payload.value =
+      results.length === 1
+        ? results[0]
+        : Object.fromEntries(sources.value.map((path, index) => [path, results[index]]))
     error.value = ''
   } catch (cause) {
     if (!active) return
@@ -46,11 +52,11 @@ async function load() {
   }
 }
 
-async function act(action: string, label: string) {
+async function act(path: string, label: string) {
   if (!confirm(`确认执行「${label}」？该操作由 CodeBuddy 服务执行。`)) return
-  busy.value = action
+  busy.value = path
   try {
-    await codebuddy(`/admin/ops/${tab.value}/${action}`, 'POST', {})
+    await codebuddy(path, 'POST', {})
     await load()
     notify(`已触发${label}`)
   } catch (cause) {
@@ -103,26 +109,26 @@ onMounted(() => {
 
     <div class="heading-actions ops-actions">
       <button
-        v-if="tab === 'media'"
-        class="button"
-        :disabled="busy === 'refresh'"
-        @click="act('refresh', '刷新媒体索引')"
-      >
-        <Images :size="15" /><span>刷新媒体索引</span>
-      </button>
-      <button
         v-if="tab === 'storage'"
         class="button"
-        :disabled="busy === 'backup'"
-        @click="act('backup', '立即备份')"
+        :disabled="busy === '/admin/storage/backups'"
+        @click="act('/admin/storage/backups', '立即备份')"
       >
         <HardDrive :size="15" /><span>立即备份</span>
       </button>
       <button
+        v-if="tab === 'storage'"
+        class="button"
+        :disabled="busy === '/admin/storage/archive'"
+        @click="act('/admin/storage/archive', '归档审计存储')"
+      >
+        <Images :size="15" /><span>归档存储</span>
+      </button>
+      <button
         v-if="tab === 'updates'"
         class="button"
-        :disabled="busy === 'check'"
-        @click="act('check', '检查更新')"
+        :disabled="busy === '/admin/update/check'"
+        @click="act('/admin/update/check', '检查更新')"
       >
         <Upload :size="15" /><span>检查更新</span>
       </button>
