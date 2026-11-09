@@ -32,6 +32,11 @@ const LOG_KINDS = ["request", "runtime", "admin", "credit"];
 const DASHBOARD_DAYS = [1, 7, 30, 90];
 const GRANULARITIES = ["auto", "hour", "day"];
 const LOG_LIMIT = { min: 1, max: 200, default: 50 };
+// `resolve_settings` rejects anything else; the service's own error message
+// names the four accepted endpoint profiles.
+const PROFILE_DOMAINS = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
+const MAX_UPLOAD_FILES = 100;
+const MAX_REFRESH_TOKENS = 50;
 
 /** Stable, URL-safe credential id: the service keys credentials by file name. */
 const nativeIdOf = (record) => {
@@ -276,6 +281,217 @@ export default function createAdapter(context) {
         items: unwrapList(body, "items"),
         nextCursor: body?.next_cursor ?? body?.cursor ?? null,
       };
+    },
+
+    /** `GET /admin/logs/{id}`; 503 when the audit store cannot answer. */
+    async getLog(id) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少日志标识", 400);
+      const body = ensureOk(
+        await request(`/admin/logs/${encodeURIComponent(key)}`),
+        "读取 CodeBuddy 日志明细",
+      );
+      return body ?? null;
+    },
+
+    /**
+     * Batch credential import. The service takes JSON (`files: [{name, content}]`),
+     * not multipart, so the browser can post it through the ordinary proxy.
+     */
+    async uploadCredentials({ files, replace = false } = {}) {
+      if (!Array.isArray(files) || files.length < 1 || files.length > MAX_UPLOAD_FILES)
+        throw new InputError(`凭证上传需包含 1 至 ${MAX_UPLOAD_FILES} 个文件`, 400);
+      for (const file of files) {
+        if (!file || typeof file.name !== "string" || typeof file.content !== "string")
+          throw new InputError("每个凭证文件必须包含 name 和 UTF-8 content", 400);
+      }
+      if (typeof replace !== "boolean") throw new InputError("replace 必须为布尔值", 400);
+      const body = ensureOk(
+        await request("/admin/credentials/upload", { method: "POST", body: { files, replace } }),
+        "上传 CodeBuddy 凭证",
+      );
+      return { results: unwrapList(body, "results") };
+    },
+
+    /** `POST /admin/credentials/refresh-import`: exchange refresh tokens for credentials. */
+    async refreshImport({ profile, refreshTokens } = {}) {
+      if (!PROFILE_DOMAINS.includes(profile))
+        throw new InputError(`端点必须为 ${PROFILE_DOMAINS.join("、")}`, 400);
+      const tokens = Array.isArray(refreshTokens)
+        ? [...new Set(refreshTokens.map((token) => (typeof token === "string" ? token.trim() : "")).filter(Boolean))]
+        : [];
+      if (!tokens.length || tokens.length > MAX_REFRESH_TOKENS)
+        throw new InputError(`refreshTokens 需包含 1 至 ${MAX_REFRESH_TOKENS} 项`, 400);
+      const body = ensureOk(
+        await request("/admin/credentials/refresh-import", {
+          method: "POST",
+          body: { profile, refresh_tokens: tokens },
+        }),
+        "导入 CodeBuddy 刷新令牌",
+      );
+      return { results: unwrapList(body, "results") };
+    },
+
+    /** Model catalog mutations are revision-aware, exactly like settings. */
+    async createModel(rule, revision) {
+      const body = { ...(rule && typeof rule === "object" ? rule : {}) };
+      if (revision !== undefined && revision !== null) body.revision = revision;
+      const saved = ensureOk(
+        await request("/admin/models", { method: "POST", body }),
+        "新建 CodeBuddy 模型",
+      );
+      return { revision: saved?.revision ?? null, model: saved?.model ?? null };
+    },
+
+    async updateModel(id, rule, revision) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少模型标识", 400);
+      const body = { ...(rule && typeof rule === "object" ? rule : {}) };
+      if (revision !== undefined && revision !== null) body.revision = revision;
+      const saved = ensureOk(
+        await request(`/admin/models/${key}`, { method: "PUT", body }),
+        "更新 CodeBuddy 模型",
+      );
+      return { revision: saved?.revision ?? null, model: saved?.model ?? null };
+    },
+
+    async deleteModel(id, revision) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少模型标识", 400);
+      const query =
+        revision === undefined || revision === null ? undefined : { revision: String(revision) };
+      ensureOk(await request(`/admin/models/${key}`, { method: "DELETE", query }), "删除 CodeBuddy 模型");
+      return { ok: true };
+    },
+
+    async previewModel(id, rule) {
+      const body = { ...(rule && typeof rule === "object" ? rule : {}) };
+      const key = String(id || "");
+      const path = key ? `/admin/models/${key}/preview` : "/admin/models/preview";
+      return ensureOk(await request(path, { method: "POST", body }), "预览 CodeBuddy 模型");
+    },
+
+    /** One user-triggered catalog scan; the service never runs it periodically. */
+    async startScan() {
+      return ensureOk(await request("/admin/models/scan", { method: "POST" }), "启动 CodeBuddy 目录扫描");
+    },
+
+    async scanState() {
+      return ensureOk(await request("/admin/models/scan"), "读取 CodeBuddy 扫描状态");
+    },
+
+    /** Spends a little credit when a nominally free model is actually charged. */
+    async startRateProbe() {
+      return ensureOk(
+        await request("/admin/models/rate-probe", { method: "POST" }),
+        "启动 CodeBuddy 计费探测",
+      );
+    },
+
+    async rateProbeState() {
+      return ensureOk(await request("/admin/models/rate-probe"), "读取 CodeBuddy 计费探测状态");
+    },
+
+    async outputProbes() {
+      return ensureOk(await request("/admin/models/output-probes"), "读取 CodeBuddy 输出探测结果");
+    },
+
+    async createKey(payload = {}) {
+      const body = ensureOk(
+        await request("/admin/keys", { method: "POST", body: payload }),
+        "新建 CodeBuddy 密钥",
+      );
+      return { key: body?.key ?? null, item: body?.item ?? body ?? null };
+    },
+
+    /** Key rewrites carry `version`, the service's own optimistic-lock token. */
+    async updateKey(id, payload = {}) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少密钥标识", 400);
+      const body = ensureOk(
+        await request(`/admin/keys/${encodeURIComponent(key)}`, { method: "PATCH", body: payload }),
+        "更新 CodeBuddy 密钥",
+      );
+      return { item: body?.item ?? body ?? null };
+    },
+
+    async deleteKey(id) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少密钥标识", 400);
+      ensureOk(await request(`/admin/keys/${encodeURIComponent(key)}`, { method: "DELETE" }), "删除 CodeBuddy 密钥");
+      return { ok: true };
+    },
+
+    /** Reveal and rotate both invalidate/return secrets; the console confirms first. */
+    async revealKey(id) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少密钥标识", 400);
+      const body = ensureOk(
+        await request(`/admin/keys/${encodeURIComponent(key)}/reveal`, { method: "POST" }),
+        "读取 CodeBuddy 密钥明文",
+      );
+      return { key: body?.key ?? body?.secret ?? null };
+    },
+
+    async rotateKey(id) {
+      const key = String(id || "");
+      if (!key) throw new InputError("缺少密钥标识", 400);
+      const body = ensureOk(
+        await request(`/admin/keys/${encodeURIComponent(key)}/rotate`, { method: "POST" }),
+        "轮换 CodeBuddy 密钥",
+      );
+      return { key: body?.key ?? null, item: body?.item ?? body ?? null };
+    },
+
+    // ── Provider-specific operations (media / storage / update / automation) ──
+
+    async getMedia() {
+      return ensureOk(await request("/admin/media"), "读取 CodeBuddy 媒体概览");
+    },
+
+    async getStorage() {
+      return ensureOk(await request("/admin/storage"), "读取 CodeBuddy 存储状态");
+    },
+
+    async archiveStorage() {
+      return ensureOk(
+        await request("/admin/storage/archive", { method: "POST" }),
+        "归档 CodeBuddy 审计存储",
+      );
+    },
+
+    async createBackup() {
+      return ensureOk(
+        await request("/admin/storage/backups", { method: "POST" }),
+        "创建 CodeBuddy 备份",
+      );
+    },
+
+    async deleteBackup(name) {
+      const key = String(name || "");
+      if (!key) throw new InputError("缺少备份名称", 400);
+      ensureOk(
+        await request(`/admin/storage/backups/${encodeURIComponent(key)}`, { method: "DELETE" }),
+        "删除 CodeBuddy 备份",
+      );
+      return { ok: true };
+    },
+
+    async getUpdate() {
+      return ensureOk(await request("/admin/update"), "读取 CodeBuddy 更新状态");
+    },
+
+    async checkUpdate() {
+      return ensureOk(await request("/admin/update/check", { method: "POST" }), "检查 CodeBuddy 更新");
+    },
+
+    async getPerformance() {
+      return ensureOk(await request("/admin/performance"), "读取 CodeBuddy 性能计数");
+    },
+
+    async getGrowthJobs() {
+      const body = ensureOk(await request("/admin/growth-jobs"), "读取 CodeBuddy 成长任务");
+      return { jobs: unwrapList(body, "jobs") };
     },
   };
 }
