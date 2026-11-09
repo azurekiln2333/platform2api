@@ -1,6 +1,9 @@
 import type {
+  AccountsError,
   OverviewAccountCounts,
   PanelAccount,
+  PanelServiceInfo,
+  PanelSettings,
   QuotaSnapshot,
   SystemHealth,
   SystemId,
@@ -365,6 +368,54 @@ export function healthTone(health: SystemHealth): 'green' | 'amber' | 'slate' | 
   if (health === 'degraded') return 'amber'
   if (health === 'offline') return 'gray'
   return 'slate'
+}
+
+/**
+ * `GET /api/settings` answers with a `systems` array; a `services` map and a
+ * `serviceUrls` map are also accepted so an alternative server shape works.
+ */
+export function serviceInfo(
+  settings: PanelSettings | null,
+  system: SystemId,
+): PanelServiceInfo | null {
+  if (!settings) return null
+  const entry =
+    settings.systems?.find((item) => item.system === system) ?? settings.services?.[system]
+  const url = entry?.url ?? settings.serviceUrls?.[system]
+  // A panel that only lists configured systems still reports its URLs.
+  if (!entry && !url) return null
+  return { ...entry, ...(url ? { url } : {}) }
+}
+
+/** Settings health tokens differ per system; the page renders one vocabulary. */
+export function serviceHealth(info: PanelServiceInfo | null): SystemHealth | null {
+  const value = typeof info?.health === 'string' ? info.health.trim().toLowerCase() : ''
+  if (value === 'down') return 'offline'
+  if (value === 'healthy' || value === 'up' || value === 'ready') return 'ok'
+  if (value === 'warning' || value === 'partial') return 'degraded'
+  return HEALTH_TOKENS[value] ?? null
+}
+
+/** `GET /api/accounts` reports per-system read failures next to the list. */
+export function normalizeAccountsErrors(value: unknown): AccountsError[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return []
+    const item = entry as { system?: unknown; error?: unknown }
+    if (!isSystemId(item.system)) return []
+    const raw = item.error
+    const message =
+      typeof raw === 'string'
+        ? raw
+        : typeof (raw as { message?: unknown } | null)?.message === 'string'
+          ? (raw as { message: string }).message
+          : '该系统账号读取失败'
+    const code =
+      typeof (raw as { code?: unknown } | null)?.code === 'string'
+        ? (raw as { code: string }).code
+        : ''
+    return [{ system: item.system, error: { message, ...(code ? { code } : {}) } }]
+  })
 }
 
 /** Localized number with an em dash for missing values. */

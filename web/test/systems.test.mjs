@@ -7,10 +7,13 @@ import {
   filterAccounts,
   normalizeAccount,
   normalizeAccountList,
+  normalizeAccountsErrors,
   normalizeTags,
   overviewCards,
   parseAccountId,
   quotaPercent,
+  serviceHealth,
+  serviceInfo,
   systemCard,
   systemTag,
 } from '../src/systems.ts'
@@ -141,6 +144,74 @@ test('filters combine system, tag and query', () => {
     ['codebuddy', 'cnb', 'zcode', '主力', '测试'].sort((a, b) => a.localeCompare(b, 'zh-CN')),
   )
   assert.deepEqual(countBySystem(accounts), { cnb: 1, codebuddy: 1, zcode: 1 })
+})
+
+test('the panel server card shape (flat, with ok/detail/health) is read as-is', () => {
+  const cards = overviewCards({
+    generatedAt: '2026-11-09T10:00:00.000Z',
+    cnb: {
+      system: 'cnb',
+      ok: true,
+      health: 'ok',
+      detail: '',
+      accounts: { total: 2, ready: 1, paused: 0 },
+      quota: { label: 'CNB 组织额度', unit: 'credits', total: 10, used: 4, remaining: 6 },
+    },
+    codebuddy: { system: 'codebuddy', ok: true, health: 'degraded', healthMessage: '审计不可用' },
+    zcode: {
+      system: 'zcode',
+      ok: false,
+      health: 'down',
+      detail: '服务不可达',
+      healthMessage: '服务不可达',
+      error: { message: '服务不可达', code: 'upstream_error' },
+    },
+  })
+  const cnb = cards.find((card) => card.system === 'cnb')
+  assert.equal(cnb.available, true)
+  assert.equal(cnb.quota.remaining, 6)
+  assert.equal(cnb.accounts.paused, 0)
+  const codebuddy = cards.find((card) => card.system === 'codebuddy')
+  assert.equal(codebuddy.health, 'degraded')
+  assert.equal(codebuddy.healthMessage, '审计不可用')
+  // `down` is the panel's health token for an unreachable service.
+  const zcode = cards.find((card) => card.system === 'zcode')
+  assert.equal(zcode.available, false)
+  assert.equal(zcode.health, 'offline')
+  assert.equal(zcode.error, '服务不可达')
+})
+
+test('settings read a systems array, a services map and a urls fallback', () => {
+  const settings = {
+    serviceUrls: { zcode: 'http://zcode:12283' },
+    systems: [
+      { system: 'cnb', url: 'http://cnb:9002', tokenConfigured: true },
+      { system: 'codebuddy', tokenConfigured: true, stub: true },
+    ],
+  }
+  assert.equal(serviceInfo(settings, 'cnb').tokenConfigured, true)
+  assert.equal(serviceInfo(settings, 'codebuddy').stub, true)
+  assert.equal(serviceInfo(settings, 'zcode').url, 'http://zcode:12283')
+  assert.equal(serviceInfo(null, 'cnb'), null)
+  assert.equal(serviceHealth({ health: 'down' }), 'offline')
+  assert.equal(serviceHealth({ health: 'healthy' }), 'ok')
+  assert.equal(serviceHealth({}), null)
+})
+
+test('per-system account read failures stay isolated', () => {
+  assert.deepEqual(
+    normalizeAccountsErrors([
+      { system: 'codebuddy', error: { message: '凭证读取失败', code: 'upstream_error' } },
+      { system: 'zcode', error: '服务不可达' },
+      { system: 'nope', error: 'ignored' },
+      null,
+    ]),
+    [
+      { system: 'codebuddy', error: { message: '凭证读取失败', code: 'upstream_error' } },
+      { system: 'zcode', error: { message: '服务不可达' } },
+    ],
+  )
+  assert.deepEqual(normalizeAccountsErrors(undefined), [])
 })
 
 test('quota percent prefers an explicit value and stays inside 0-100', () => {

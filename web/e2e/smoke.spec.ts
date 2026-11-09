@@ -60,9 +60,9 @@ test('one unified account list carries a system badge, filter and tag editing', 
   await page.getByTestId('filter-cnb').click()
   await expect(page.getByTestId('account-cnb:cnb-a1')).toBeVisible()
 
-  // Tag filter.
+  // Tag filter: the automatic system tag is a real tag, so it filters too.
   await page.getByTestId('filter-all').click()
-  await page.getByTestId('tag-filter').selectOption('主力')
+  await page.getByTestId('tag-filter').selectOption('cnb')
   await expect(page.getByTestId('account-cnb:cnb-a1')).toBeVisible()
   await expect(page.getByTestId('account-codebuddy:cb-b1')).toHaveCount(0)
   await page.getByTestId('tag-filter').selectOption('')
@@ -117,6 +117,7 @@ test('settings page reports each service address and token state', async ({ page
   for (const system of ['cnb', 'codebuddy', 'zcode'])
     await expect(page.getByTestId(`setting-${system}`)).toBeVisible()
   await expect(page.getByTestId('setting-cnb')).toContainText('http://cnb:9002')
+  await expect(page.getByTestId('setting-codebuddy')).toContainText('已配置')
   await expect(page.getByTestId('setting-zcode')).toContainText('未配置')
 })
 

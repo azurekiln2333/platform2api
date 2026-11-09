@@ -109,17 +109,30 @@ export interface SessionUser {
 }
 
 export interface PanelServiceInfo {
+  system?: SystemId
   url?: string
   tokenConfigured?: boolean
   health?: SystemHealth
   message?: string
+  stub?: boolean
 }
 
-/** `GET /api/settings` (optional): panel-side service wiring, tokens stay masked. */
+/**
+ * `GET /api/settings`: the panel server returns a `systems` array; a `services`
+ * map is also accepted so the console works against either shape.
+ */
 export interface PanelSettings {
-  services: Partial<Record<SystemId, PanelServiceInfo>>
+  systems?: PanelServiceInfo[]
+  services?: Partial<Record<SystemId, PanelServiceInfo>>
+  serviceUrls?: Partial<Record<SystemId, string>>
+  ssoCallbackUrl?: string
   panelUrl?: string
   version?: string
   dataDir?: string
-  notes?: string[]
+}
+
+/** Per-system account read failure reported by `GET /api/accounts`. */
+export interface AccountsError {
+  system: SystemId
+  error: { message?: string; code?: string }
 }

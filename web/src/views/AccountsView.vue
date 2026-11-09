@@ -1,10 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { KeyRound, LoaderCircle, RefreshCw, Search, Tag, UsersRound, X } from '@lucide/vue'
+import {
+  KeyRound,
+  LoaderCircle,
+  RefreshCw,
+  Search,
+  Tag,
+  UsersRound,
+  X,
+  CircleAlert,
+} from '@lucide/vue'
 import AuthFlowDialog from '../components/AuthFlowDialog.vue'
 import SystemBadge from '../components/SystemBadge.vue'
 import TagEditor from '../components/TagEditor.vue'
-import { accounts, accountsLoading, refreshAccounts } from '../panel.ts'
+import { accounts, accountsErrors, accountsLoading, refreshAccounts } from '../panel.ts'
 import {
   SYSTEMS,
   allTags,
@@ -97,6 +106,20 @@ onMounted(() => {
         </button>
       </div>
     </header>
+
+    <div
+      v-if="accountsErrors.length"
+      class="error-banner"
+      role="alert"
+      data-testid="accounts-errors"
+    >
+      <CircleAlert :size="16" />
+      <span>该系统账号读取失败，其余系统不受影响：</span>
+      <span v-for="item in accountsErrors" :key="item.system" class="account-error-item">
+        <SystemBadge :system="item.system" compact />{{ item.error.message ?? '读取失败' }}
+      </span>
+      <button @click="reload">重试</button>
+    </div>
 
     <div class="section-panel" data-testid="accounts-panel">
       <div class="table-toolbar">

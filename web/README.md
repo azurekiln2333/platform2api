@@ -18,8 +18,10 @@ npm run test:e2e     # Playwright smoke against e2e/support/panel-fixture.mjs
 npm run dev          # needs a panel server on 127.0.0.1:9000
 ```
 
-`test:e2e` serves `dist/`, so build first (`npx vite build`). The fixture implements the panel
-API surface below with fixtures only: no service, no credentials, no upstream calls.
+`test:e2e` builds the console first (`vite build`, no type-check) and then serves `dist/`. The
+fixture boots the **real panel server** (`src/app.mjs`) with three fake adapters and a temp data dir, so the
+browser tests exercise the actual panel routes (login, overview, accounts, tags, auth flows, settings, static
+serving). No service, no credentials, no upstream calls.
 
 ## Page ownership
 
@@ -38,31 +40,36 @@ Routes without a page render `PendingView`, so a missing page is visible instead
 ## Panel API contract consumed by the shell
 
 `design.md` in `.trellis/tasks/11-09-unified-platform-management` is authoritative; the shell
-degrades when an endpoint is absent.
+degrades when an endpoint is absent. Shapes verified against the shipped server (`src/app.mjs`,
+`src/overview.mjs`, `src/accounts.mjs`):
 
 - `GET /api/auth/config` → `{ keyLoginEnabled, sso: { enabled, providerName, loginUrl } }`.
   Missing/erroring = key login only.
-- `POST /api/login` `{ key }` (+ `POST /api/logout`), `GET /api/session` →
-  `{ authenticated, user? }`. `POST/DELETE /api/session` (cnb2api-panel naming) is accepted as a
-  404 fallback so either server shape works; remove the fallback once P1 fixes the route.
-- `GET /api/overview` → `{ cnb: <card>, codebuddy: <card>, zcode: <card> }`. One card per system,
-  never summed (R10). A failing system returns `{ "error": { "message": "…" } }` for its key only.
-- `GET /api/accounts[?system=cnb]` → `{ accounts: [...] }` or a bare array. Each row:
-  `{ id: "<system>:<nativeId>", system, label, status, quota?, tags[], detail?, error? }`.
-  `tags` always contains the automatic system tag; user tags come from the panel tag store.
-- `PATCH /api/accounts/{id}/tags` `{ tags: string[] }` → `{ account }` (also accepts `{ accounts }`
-  or a bare row). `id` is URL-encoded `<system>:<nativeId>`; native ids may contain colons.
-- `POST /api/accounts/auth/{system}/{start|poll|complete}` → `AuthFlow`:
-  `{ flowId, status: pending|success|failed|expired, message?, url?, steps?, inputs?, accountId?, pollIntervalMs? }`.
-  The shell never hardcodes provider fields: `inputs` (`{ name, label, secret?, required? }`) are
-  rendered generically and posted back to `poll` as `{ flowId, values: { [name]: string } }`.
-  A flow without `inputs` is polled every `pollIntervalMs` (default 2000 ms).
-- `GET /api/settings` (optional) → `{ services: { cnb|codebuddy|zcode: { url, tokenConfigured, health, message } }, panelUrl?, version?, dataDir? }`.
-  Absent = the settings page states that the endpoint is missing; nothing else breaks.
+- `POST /api/session` `{ key }`, `DELETE /api/session`, `GET /api/session` →
+  `{ authenticated, user?, systems? }`. `POST /api/login`/`POST /api/logout` are tried as 404
+  fallbacks so cnb2api-panel-style servers also work.
+- `GET /api/overview` → `{ generatedAt, cnb: <card>, codebuddy: <card>, zcode: <card> }`. Each card is
+  the adapter payload **flat** (no nested `overview` key) plus `{ system, ok, health, detail,
+  healthMessage }`. Health is a plain string (`ok|degraded|down|unknown`); `down` renders as offline.
+  A failing system carries `error: { message, code }` on its own key only (R10/sh-overview-2).
+- `GET /api/accounts[?system=][&tag=]` → `{ accounts, errors, systems }`. Row:
+  `{ id: "<system>:<nativeId>", system, nativeId, label, status, enabled?, quota?, tags[], systemTags,
+  userTags, raw? }`. `tags[0]` is the automatic system tag. `errors: [{ system, error: {message, code} }]`
+  lists per-system read failures and is rendered as a banner without hiding the other systems.
+- `PATCH /api/accounts/{id}/tags` `{ tags }` → `{ id, system, tags, userTags }` (URL-encoded id; a
+  full account row is also accepted). `id` native parts may contain colons.
+- `POST /api/accounts/auth/{system}/{start|poll|complete}` → `{ system, flowId, result }` where
+  `result` is the adapter flow: `{ flowId, status: pending|success|failed|expired, message?, url?,
+  steps?, inputs?, accountId?, pollIntervalMs? }`. The shell unwraps `result` and never hardcodes
+  provider fields: `inputs` (`{ name, label, secret?, required? }`) are rendered generically and
+  posted back to `poll` as `{ flowId, values: { [name]: string } }`. Without `inputs`, the flow is
+  polled every `pollIntervalMs` (default 2000 ms).
+- `GET /api/settings` → `{ serviceUrls, systems: [{ system, url, tokenConfigured, stub }], ssoCallbackUrl }`.
+  A `services` map is also read. Absent endpoint = the settings page says so; nothing else breaks.
 
 ### Overview card shape
 
-Consumed fields per system card (extra keys are ignored):
+Consumed fields per system card (extra keys are ignored; the server adds `system`/`ok`/`detail`):
 
 ```json
 {
@@ -89,11 +96,12 @@ credits, 积分 and 点 stay separate.
 
 ## Tests
 
-- `test/systems.test.mjs` — pure helpers: per-system cards and error isolation, no summed totals,
-  account/tag normalization, filters, quota percent.
+- `test/systems.test.mjs` — pure helpers: per-system cards (flat panel shape, `down` health) and error
+  isolation, no summed totals, account/tag normalization, per-system account errors, settings
+  `systems`/`services`/`serviceUrls`, filters, quota percent.
 - `e2e/smoke.spec.ts` — key login, three independent overview cards, unified account list with
   system badge/filter/tag editing, panel-only authorization for all three systems, settings page,
-  route slot placeholder, sign-out.
+  route slot placeholder, sign-out. Runs against the real panel server via `e2e/support/panel-fixture.mjs`.
 
-Not covered here (integration pass): real panel server routes, Playwright against the real
-`src/app.mjs`, and per-system pages owned by P3/P4.
+Not covered here: the three real service containers (adapters are faked in the browser fixture), and
+per-system pages owned by P3/P4 beyond the sidebar/route-slot wiring.

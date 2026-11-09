@@ -2,13 +2,17 @@ import { computed, ref } from 'vue'
 import { api, ApiError, type ApiDiagnostics } from './api.ts'
 import {
   normalizeAccountList,
+  normalizeAccountsErrors,
   normalizeTags,
   overviewCards,
   parseAccountId,
+  serviceHealth,
+  serviceInfo,
   systemTag,
   type SystemCard,
 } from './systems.ts'
 import type {
+  AccountsError,
   AuthConfig,
   AuthFlow,
   AuthFlowStatus,
@@ -36,6 +40,8 @@ export const overviewLoading = ref(false)
 export const accountsLoading = ref(false)
 export const lastUpdated = ref<Date | null>(null)
 export const refreshError = ref('')
+/** Per-system account read failures reported alongside the unified list. */
+export const accountsErrors = ref<AccountsError[]>([])
 
 export const toasts = ref<
   { id: number; text: string; error: boolean; diagnostics?: ApiDiagnostics }[]
@@ -87,9 +93,8 @@ export async function copy(text: string) {
 }
 
 /**
- * Login contract is `POST /api/login`; cnb2api-panel uses `POST /api/session`.
- * Every accepted variant is tried in order until one is not a 404, so the shell
- * works against either server shape while the panel server contract lands.
+ * Login contract is `POST /api/session` (cnb2api-panel naming, R13). `POST
+ * /api/login` is tried as a fallback so an alternate server shape still works.
  */
 async function sessionRequest(
   variants: { path: string; method: 'POST' | 'DELETE' }[],
@@ -143,8 +148,8 @@ export async function loadSession() {
 export async function signIn(key: string) {
   await sessionRequest(
     [
-      { path: '/login', method: 'POST' },
       { path: '/session', method: 'POST' },
+      { path: '/login', method: 'POST' },
     ],
     {
       key,
@@ -155,9 +160,9 @@ export async function signIn(key: string) {
 
 export async function signOut() {
   await sessionRequest([
+    { path: '/session', method: 'DELETE' },
     { path: '/logout', method: 'POST' },
     { path: '/login', method: 'DELETE' },
-    { path: '/session', method: 'DELETE' },
   ])
   reset()
 }
@@ -166,6 +171,7 @@ export function reset() {
   session.value = { authenticated: false, user: null }
   cards.value = []
   accounts.value = []
+  accountsErrors.value = []
   panelSettings.value = null
   lastUpdated.value = null
   refreshError.value = ''
@@ -200,7 +206,9 @@ export async function refreshAccounts(query: AccountQuery = {}) {
     const params = new URLSearchParams()
     if (query.system && query.system !== 'all') params.set('system', query.system)
     const path = `/accounts${params.size ? `?${params}` : ''}`
-    accounts.value = normalizeAccountList(await api<unknown>(path))
+    const payload = (await api<unknown>(path)) as { errors?: unknown } | null
+    accounts.value = normalizeAccountList(payload)
+    accountsErrors.value = normalizeAccountsErrors(payload?.errors)
   } catch (error) {
     reportError(error, '账号列表加载失败')
   } finally {
@@ -213,24 +221,33 @@ export function replaceAccount(next: PanelAccount) {
 }
 
 export async function saveTags(account: PanelAccount, tags: string[]) {
-  const response = await api<unknown>(`/accounts/${encodeURIComponent(account.id)}/tags`, 'PATCH', {
-    tags,
-  })
-  const payload = response as { account?: unknown } | null
+  const response = (await api<unknown>(
+    `/accounts/${encodeURIComponent(account.id)}/tags`,
+    'PATCH',
+    { tags },
+  )) as { tags?: unknown; userTags?: unknown; account?: unknown } | null
+  // The panel answers `{ id, tags, userTags }`; a full account row is also accepted.
+  const saved = [response?.userTags, response?.tags]
+    .find((value) => Array.isArray(value))
+    ?.filter((tag): tag is string => typeof tag === 'string')
+    .filter((tag) => tag !== account.system)
   const updated =
     normalizeAccountList(response).find((item) => item.id === account.id) ??
-    normalizeAccountList(payload?.account ? [payload.account] : []).find(
+    normalizeAccountList(response?.account ? [response.account] : []).find(
       (item) => item.id === account.id,
     )
   replaceAccount(
-    updated ?? { ...account, tags: normalizeTags([systemTag(account.system), ...tags]) },
+    updated ?? {
+      ...account,
+      tags: normalizeTags([systemTag(account.system), ...(saved ?? tags)]),
+    },
   )
   notify('标签已保存')
 }
 
 export async function loadPanelSettings() {
   try {
-    panelSettings.value = await api<PanelSettings>('/settings')
+    panelSettings.value = (await api<PanelSettings>('/settings')) ?? null
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 404) reportError(error, '面板设置读取失败')
     panelSettings.value = null
@@ -243,28 +260,62 @@ function authPath(system: SystemId, step: 'start' | 'poll' | 'complete') {
   return `/accounts/auth/${system}/${step}`
 }
 
+/**
+ * The panel wraps the adapter payload as `{ system, flowId, result }`;
+ * `result` carries the flow itself, so it is unwrapped here.
+ */
+function flowOf(system: SystemId, payload: unknown, fallbackFlowId = ''): AuthFlow {
+  const body = (payload ?? {}) as {
+    flowId?: unknown
+    result?: unknown
+    status?: unknown
+    system?: unknown
+  }
+  const flow = (body.result && typeof body.result === 'object' ? body.result : body) as Record<
+    string,
+    unknown
+  >
+  const flowId =
+    typeof flow.flowId === 'string'
+      ? flow.flowId
+      : typeof body.flowId === 'string'
+        ? body.flowId
+        : fallbackFlowId
+  const status =
+    typeof flow.status === 'string' &&
+    ['pending', 'success', 'failed', 'expired'].includes(flow.status)
+      ? (flow.status as AuthFlowStatus)
+      : 'pending'
+  return { ...(flow as unknown as AuthFlow), system, flowId, status }
+}
+
 export async function startAuth(system: SystemId, accountId?: string) {
-  const flow = await api<AuthFlow>(
+  const payload = await api<unknown>(
     authPath(system, 'start'),
     'POST',
     accountId ? { accountId } : {},
   )
-  return { ...flow, system }
+  return flowOf(system, payload)
 }
 
 export async function pollAuth(system: SystemId, flowId: string) {
-  const flow = await api<AuthFlow>(authPath(system, 'poll'), 'POST', { flowId })
-  return { ...flow, system, flowId: flow.flowId ?? flowId }
+  return flowOf(system, await api<unknown>(authPath(system, 'poll'), 'POST', { flowId }), flowId)
 }
 
 export async function submitAuth(system: SystemId, flowId: string, values: Record<string, string>) {
-  const flow = await api<AuthFlow>(authPath(system, 'poll'), 'POST', { flowId, values })
-  return { ...flow, system, flowId: flow.flowId ?? flowId }
+  return flowOf(
+    system,
+    await api<unknown>(authPath(system, 'poll'), 'POST', { flowId, values }),
+    flowId,
+  )
 }
 
 export async function completeAuth(system: SystemId, flowId: string) {
-  const flow = await api<AuthFlow>(authPath(system, 'complete'), 'POST', { flowId })
-  return { ...flow, system, flowId: flow.flowId ?? flowId }
+  return flowOf(
+    system,
+    await api<unknown>(authPath(system, 'complete'), 'POST', { flowId }),
+    flowId,
+  )
 }
 
 export const authPollMs = (flow: AuthFlow) =>

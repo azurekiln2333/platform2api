@@ -9,7 +9,14 @@ import {
   panelSettings,
   refreshOverview,
 } from '../panel.ts'
-import { SYSTEMS, healthLabel, healthTone, systemMeta } from '../systems.ts'
+import {
+  SYSTEMS,
+  healthLabel,
+  healthTone,
+  serviceHealth,
+  serviceInfo,
+  systemMeta,
+} from '../systems.ts'
 
 const props = defineProps<{ dark: boolean }>()
 const emit = defineEmits<{ 'toggle-theme': [] }>()
@@ -22,10 +29,10 @@ const loginModes = computed(() => [
     : []),
 ])
 const services = computed(() =>
-  SYSTEMS.map((system) => ({
-    meta: system,
-    info: panelSettings.value?.services?.[system.id] ?? null,
-  })),
+  SYSTEMS.map((system) => {
+    const info = serviceInfo(panelSettings.value, system.id)
+    return { meta: system, info, health: serviceHealth(info) }
+  }),
 )
 
 onMounted(() => {
@@ -86,7 +93,10 @@ onMounted(() => {
                 <code class="mono">{{ service.info?.url ?? '由服务端环境变量配置' }}</code>
               </td>
               <td>
-                <span v-if="service.info?.tokenConfigured === true" class="status-badge">
+                <span v-if="service.info?.stub === true" class="status-badge pending">
+                  <i />占位适配器
+                </span>
+                <span v-else-if="service.info?.tokenConfigured === true" class="status-badge">
                   <i />已配置
                 </span>
                 <span
@@ -98,9 +108,9 @@ onMounted(() => {
                 <span v-else class="cell-secondary">—</span>
               </td>
               <td>
-                <span v-if="service.info?.health" class="health-pill">
-                  <i class="status-dot" :class="healthTone(service.info.health)" />{{
-                    healthLabel(service.info.health)
+                <span v-if="service.health" class="health-pill">
+                  <i class="status-dot" :class="healthTone(service.health)" />{{
+                    healthLabel(service.health)
                   }}
                 </span>
                 <span v-else class="cell-secondary">{{ service.info?.message ?? '尚未探测' }}</span>
