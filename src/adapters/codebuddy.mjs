@@ -63,21 +63,29 @@ const failure = (response, what) => {
     typeof response.body === "string" && response.body.trim()
       ? response.body.trim().slice(0, 300)
       : response.body && typeof response.body === "object"
-        ? String(response.body.detail ?? response.body.error ?? response.body.message ?? "").slice(0, 300)
+        ? String(
+            response.body.detail ??
+              response.body.error ??
+              response.body.message ??
+              "",
+          ).slice(0, 300)
         : "";
   const status = response.status;
-  return new AdapterError(`${what}失败：CodeBuddy 返回 ${status}${detail ? `（${detail}）` : ""}`, {
-    // 409 must reach the browser unchanged so the console can show a conflict.
-    status: status === 409 ? 409 : 502,
-    code:
-      status === 409
-        ? "revision_conflict"
-        : status === 503
-          ? "upstream_unavailable"
-          : status === 401 || status === 403
-            ? "service_auth_failed"
-            : "upstream_error",
-  });
+  return new AdapterError(
+    `${what}失败：CodeBuddy 返回 ${status}${detail ? `（${detail}）` : ""}`,
+    {
+      // 409 must reach the browser unchanged so the console can show a conflict.
+      status: status === 409 ? 409 : 502,
+      code:
+        status === 409
+          ? "revision_conflict"
+          : status === 503
+            ? "upstream_unavailable"
+            : status === 401 || status === 403
+              ? "service_auth_failed"
+              : "upstream_error",
+    },
+  );
 };
 
 const ensureOk = (response, what) => {
@@ -87,7 +95,8 @@ const ensureOk = (response, what) => {
 
 export default function createAdapter(context) {
   const { system = "codebuddy", client } = context || {};
-  if (!client) throw new Error("codebuddy adapter requires the shared service client");
+  if (!client)
+    throw new Error("codebuddy adapter requires the shared service client");
 
   const request = (path, options) => client.request(path, options);
 
@@ -100,7 +109,10 @@ export default function createAdapter(context) {
         const response = await request("/admin/session");
         if (!response.ok)
           return {
-            status: response.status === 401 || response.status === 403 ? "down" : "degraded",
+            status:
+              response.status === 401 || response.status === 403
+                ? "down"
+                : "degraded",
             detail:
               response.status === 401 || response.status === 403
                 ? "服务拒绝了 PLATFORM_TOKEN，请检查面板与服务的令牌是否一致"
@@ -108,7 +120,10 @@ export default function createAdapter(context) {
           };
         return { status: "ok" };
       } catch (error) {
-        return { status: "down", detail: error?.message || "无法连接 CodeBuddy" };
+        return {
+          status: "down",
+          detail: error?.message || "无法连接 CodeBuddy",
+        };
       }
     },
 
@@ -117,8 +132,12 @@ export default function createAdapter(context) {
      * AdapterError so the panel marks usage unavailable instead of zero.
      */
     async overview(params = {}) {
-      const days = DASHBOARD_DAYS.includes(Number(params.days)) ? Number(params.days) : 7;
-      const granularity = GRANULARITIES.includes(params.granularity) ? params.granularity : "auto";
+      const days = DASHBOARD_DAYS.includes(Number(params.days))
+        ? Number(params.days)
+        : 7;
+      const granularity = GRANULARITIES.includes(params.granularity)
+        ? params.granularity
+        : "auto";
       const response = await request("/admin/dashboard", {
         query: { days, granularity },
       });
@@ -149,7 +168,9 @@ export default function createAdapter(context) {
           enabled: record?.enabled !== false && record?.disabled !== true,
           quota: record?.quota ?? record?.credits ?? null,
           // Provider tags only; accounts.mjs prepends the system tag itself.
-          tags: Array.isArray(record?.tags) ? record.tags.map(String).slice(0, 20) : [],
+          tags: Array.isArray(record?.tags)
+            ? record.tags.map(String).slice(0, 20)
+            : [],
           raw: record,
         };
       });
@@ -165,7 +186,10 @@ export default function createAdapter(context) {
       const path = `/admin/credentials/${encodeURIComponent(id)}`;
 
       if (action === "delete") {
-        ensureOk(await request(path, { method: "DELETE" }), "删除 CodeBuddy 凭证");
+        ensureOk(
+          await request(path, { method: "DELETE" }),
+          "删除 CodeBuddy 凭证",
+        );
         return { ok: true };
       }
       if (action !== "update")
@@ -184,7 +208,10 @@ export default function createAdapter(context) {
     /** Enrollment is independent of console login: start an upstream OAuth flow. */
     async startAuth(payload = {}) {
       const site = payload?.site === "intl" ? "intl" : "cn";
-      const response = await request("/admin/oauth/start", { method: "POST", query: { site } });
+      const response = await request("/admin/oauth/start", {
+        method: "POST",
+        query: { site },
+      });
       const body = ensureOk(response, "发起 CodeBuddy 授权");
       return {
         flowId: String(body?.login_id ?? ""),
@@ -197,9 +224,12 @@ export default function createAdapter(context) {
     async pollAuth(flowId) {
       const id = String(flowId || "");
       if (!id) throw new InputError("缺少 login_id", 400);
-      const response = await request("/admin/oauth/poll", { query: { login_id: id } });
+      const response = await request("/admin/oauth/poll", {
+        query: { login_id: id },
+      });
       const body = ensureOk(response, "轮询 CodeBuddy 授权");
-      if (body?.error) return { status: "error", detail: String(body.error), raw: body };
+      if (body?.error)
+        return { status: "error", detail: String(body.error), raw: body };
       if (!body?.done) return { status: "pending", raw: body };
       return {
         status: "done",
@@ -234,12 +264,21 @@ export default function createAdapter(context) {
     // per system for envelopes and revision rules.
 
     async listKeys() {
-      const body = ensureOk(await request("/admin/keys"), "读取 CodeBuddy 密钥");
-      return { external: Boolean(body?.external), items: unwrapList(body, "items") };
+      const body = ensureOk(
+        await request("/admin/keys"),
+        "读取 CodeBuddy 密钥",
+      );
+      return {
+        external: Boolean(body?.external),
+        items: unwrapList(body, "items"),
+      };
     },
 
     async listModels() {
-      const body = ensureOk(await request("/admin/models"), "读取 CodeBuddy 模型");
+      const body = ensureOk(
+        await request("/admin/models"),
+        "读取 CodeBuddy 模型",
+      );
       return {
         revision: body?.revision ?? null,
         models: unwrapList(body, "models").slice(0, 5000),
@@ -248,7 +287,10 @@ export default function createAdapter(context) {
     },
 
     async getSettings() {
-      const body = ensureOk(await request("/admin/settings"), "读取 CodeBuddy 设置");
+      const body = ensureOk(
+        await request("/admin/settings"),
+        "读取 CodeBuddy 设置",
+      );
       return {
         revision: body?.revision ?? null,
         items: Array.isArray(body?.items) ? body.items : [],
@@ -259,9 +301,14 @@ export default function createAdapter(context) {
 
     /** Revision-aware write: a stale revision surfaces as a 409 conflict. */
     async patchSettings(values, revision) {
-      const body = { values: values && typeof values === "object" ? values : {} };
+      const body = {
+        values: values && typeof values === "object" ? values : {},
+      };
       if (revision !== undefined && revision !== null) body.revision = revision;
-      const response = await request("/admin/settings", { method: "PATCH", body });
+      const response = await request("/admin/settings", {
+        method: "PATCH",
+        body,
+      });
       const saved = ensureOk(response, "保存 CodeBuddy 设置");
       return {
         revision: saved?.revision ?? null,
@@ -270,13 +317,23 @@ export default function createAdapter(context) {
       };
     },
 
-    async listLogs({ kind = "request", limit = LOG_LIMIT.default, cursor } = {}) {
+    async listLogs({
+      kind = "request",
+      limit = LOG_LIMIT.default,
+      cursor,
+    } = {}) {
       const query = {
         kind: LOG_KINDS.includes(kind) ? kind : "request",
-        limit: Math.min(LOG_LIMIT.max, Math.max(LOG_LIMIT.min, Number(limit) || LOG_LIMIT.default)),
+        limit: Math.min(
+          LOG_LIMIT.max,
+          Math.max(LOG_LIMIT.min, Number(limit) || LOG_LIMIT.default),
+        ),
       };
       if (cursor) query.cursor = String(cursor);
-      const body = ensureOk(await request("/admin/logs", { query }), "读取 CodeBuddy 日志");
+      const body = ensureOk(
+        await request("/admin/logs", { query }),
+        "读取 CodeBuddy 日志",
+      );
       return {
         items: unwrapList(body, "items"),
         nextCursor: body?.next_cursor ?? body?.cursor ?? null,
@@ -299,15 +356,33 @@ export default function createAdapter(context) {
      * not multipart, so the browser can post it through the ordinary proxy.
      */
     async uploadCredentials({ files, replace = false } = {}) {
-      if (!Array.isArray(files) || files.length < 1 || files.length > MAX_UPLOAD_FILES)
-        throw new InputError(`凭证上传需包含 1 至 ${MAX_UPLOAD_FILES} 个文件`, 400);
+      if (
+        !Array.isArray(files) ||
+        files.length < 1 ||
+        files.length > MAX_UPLOAD_FILES
+      )
+        throw new InputError(
+          `凭证上传需包含 1 至 ${MAX_UPLOAD_FILES} 个文件`,
+          400,
+        );
       for (const file of files) {
-        if (!file || typeof file.name !== "string" || typeof file.content !== "string")
-          throw new InputError("每个凭证文件必须包含 name 和 UTF-8 content", 400);
+        if (
+          !file ||
+          typeof file.name !== "string" ||
+          typeof file.content !== "string"
+        )
+          throw new InputError(
+            "每个凭证文件必须包含 name 和 UTF-8 content",
+            400,
+          );
       }
-      if (typeof replace !== "boolean") throw new InputError("replace 必须为布尔值", 400);
+      if (typeof replace !== "boolean")
+        throw new InputError("replace 必须为布尔值", 400);
       const body = ensureOk(
-        await request("/admin/credentials/upload", { method: "POST", body: { files, replace } }),
+        await request("/admin/credentials/upload", {
+          method: "POST",
+          body: { files, replace },
+        }),
         "上传 CodeBuddy 凭证",
       );
       return { results: unwrapList(body, "results") };
@@ -318,10 +393,19 @@ export default function createAdapter(context) {
       if (!PROFILE_DOMAINS.includes(profile))
         throw new InputError(`端点必须为 ${PROFILE_DOMAINS.join("、")}`, 400);
       const tokens = Array.isArray(refreshTokens)
-        ? [...new Set(refreshTokens.map((token) => (typeof token === "string" ? token.trim() : "")).filter(Boolean))]
+        ? [
+            ...new Set(
+              refreshTokens
+                .map((token) => (typeof token === "string" ? token.trim() : ""))
+                .filter(Boolean),
+            ),
+          ]
         : [];
       if (!tokens.length || tokens.length > MAX_REFRESH_TOKENS)
-        throw new InputError(`refreshTokens 需包含 1 至 ${MAX_REFRESH_TOKENS} 项`, 400);
+        throw new InputError(
+          `refreshTokens 需包含 1 至 ${MAX_REFRESH_TOKENS} 项`,
+          400,
+        );
       const body = ensureOk(
         await request("/admin/credentials/refresh-import", {
           method: "POST",
@@ -359,25 +443,41 @@ export default function createAdapter(context) {
       const key = String(id || "");
       if (!key) throw new InputError("缺少模型标识", 400);
       const query =
-        revision === undefined || revision === null ? undefined : { revision: String(revision) };
-      ensureOk(await request(`/admin/models/${key}`, { method: "DELETE", query }), "删除 CodeBuddy 模型");
+        revision === undefined || revision === null
+          ? undefined
+          : { revision: String(revision) };
+      ensureOk(
+        await request(`/admin/models/${key}`, { method: "DELETE", query }),
+        "删除 CodeBuddy 模型",
+      );
       return { ok: true };
     },
 
     async previewModel(id, rule) {
       const body = { ...(rule && typeof rule === "object" ? rule : {}) };
       const key = String(id || "");
-      const path = key ? `/admin/models/${key}/preview` : "/admin/models/preview";
-      return ensureOk(await request(path, { method: "POST", body }), "预览 CodeBuddy 模型");
+      const path = key
+        ? `/admin/models/${key}/preview`
+        : "/admin/models/preview";
+      return ensureOk(
+        await request(path, { method: "POST", body }),
+        "预览 CodeBuddy 模型",
+      );
     },
 
     /** One user-triggered catalog scan; the service never runs it periodically. */
     async startScan() {
-      return ensureOk(await request("/admin/models/scan", { method: "POST" }), "启动 CodeBuddy 目录扫描");
+      return ensureOk(
+        await request("/admin/models/scan", { method: "POST" }),
+        "启动 CodeBuddy 目录扫描",
+      );
     },
 
     async scanState() {
-      return ensureOk(await request("/admin/models/scan"), "读取 CodeBuddy 扫描状态");
+      return ensureOk(
+        await request("/admin/models/scan"),
+        "读取 CodeBuddy 扫描状态",
+      );
     },
 
     /** Spends a little credit when a nominally free model is actually charged. */
@@ -389,11 +489,17 @@ export default function createAdapter(context) {
     },
 
     async rateProbeState() {
-      return ensureOk(await request("/admin/models/rate-probe"), "读取 CodeBuddy 计费探测状态");
+      return ensureOk(
+        await request("/admin/models/rate-probe"),
+        "读取 CodeBuddy 计费探测状态",
+      );
     },
 
     async outputProbes() {
-      return ensureOk(await request("/admin/models/output-probes"), "读取 CodeBuddy 输出探测结果");
+      return ensureOk(
+        await request("/admin/models/output-probes"),
+        "读取 CodeBuddy 输出探测结果",
+      );
     },
 
     async createKey(payload = {}) {
@@ -409,7 +515,10 @@ export default function createAdapter(context) {
       const key = String(id || "");
       if (!key) throw new InputError("缺少密钥标识", 400);
       const body = ensureOk(
-        await request(`/admin/keys/${encodeURIComponent(key)}`, { method: "PATCH", body: payload }),
+        await request(`/admin/keys/${encodeURIComponent(key)}`, {
+          method: "PATCH",
+          body: payload,
+        }),
         "更新 CodeBuddy 密钥",
       );
       return { item: body?.item ?? body ?? null };
@@ -418,7 +527,12 @@ export default function createAdapter(context) {
     async deleteKey(id) {
       const key = String(id || "");
       if (!key) throw new InputError("缺少密钥标识", 400);
-      ensureOk(await request(`/admin/keys/${encodeURIComponent(key)}`, { method: "DELETE" }), "删除 CodeBuddy 密钥");
+      ensureOk(
+        await request(`/admin/keys/${encodeURIComponent(key)}`, {
+          method: "DELETE",
+        }),
+        "删除 CodeBuddy 密钥",
+      );
       return { ok: true };
     },
 
@@ -427,7 +541,9 @@ export default function createAdapter(context) {
       const key = String(id || "");
       if (!key) throw new InputError("缺少密钥标识", 400);
       const body = ensureOk(
-        await request(`/admin/keys/${encodeURIComponent(key)}/reveal`, { method: "POST" }),
+        await request(`/admin/keys/${encodeURIComponent(key)}/reveal`, {
+          method: "POST",
+        }),
         "读取 CodeBuddy 密钥明文",
       );
       return { key: body?.key ?? body?.secret ?? null };
@@ -437,7 +553,9 @@ export default function createAdapter(context) {
       const key = String(id || "");
       if (!key) throw new InputError("缺少密钥标识", 400);
       const body = ensureOk(
-        await request(`/admin/keys/${encodeURIComponent(key)}/rotate`, { method: "POST" }),
+        await request(`/admin/keys/${encodeURIComponent(key)}/rotate`, {
+          method: "POST",
+        }),
         "轮换 CodeBuddy 密钥",
       );
       return { key: body?.key ?? null, item: body?.item ?? body ?? null };
@@ -450,7 +568,10 @@ export default function createAdapter(context) {
     },
 
     async getStorage() {
-      return ensureOk(await request("/admin/storage"), "读取 CodeBuddy 存储状态");
+      return ensureOk(
+        await request("/admin/storage"),
+        "读取 CodeBuddy 存储状态",
+      );
     },
 
     async archiveStorage() {
@@ -471,26 +592,40 @@ export default function createAdapter(context) {
       const key = String(name || "");
       if (!key) throw new InputError("缺少备份名称", 400);
       ensureOk(
-        await request(`/admin/storage/backups/${encodeURIComponent(key)}`, { method: "DELETE" }),
+        await request(`/admin/storage/backups/${encodeURIComponent(key)}`, {
+          method: "DELETE",
+        }),
         "删除 CodeBuddy 备份",
       );
       return { ok: true };
     },
 
     async getUpdate() {
-      return ensureOk(await request("/admin/update"), "读取 CodeBuddy 更新状态");
+      return ensureOk(
+        await request("/admin/update"),
+        "读取 CodeBuddy 更新状态",
+      );
     },
 
     async checkUpdate() {
-      return ensureOk(await request("/admin/update/check", { method: "POST" }), "检查 CodeBuddy 更新");
+      return ensureOk(
+        await request("/admin/update/check", { method: "POST" }),
+        "检查 CodeBuddy 更新",
+      );
     },
 
     async getPerformance() {
-      return ensureOk(await request("/admin/performance"), "读取 CodeBuddy 性能计数");
+      return ensureOk(
+        await request("/admin/performance"),
+        "读取 CodeBuddy 性能计数",
+      );
     },
 
     async getGrowthJobs() {
-      const body = ensureOk(await request("/admin/growth-jobs"), "读取 CodeBuddy 成长任务");
+      const body = ensureOk(
+        await request("/admin/growth-jobs"),
+        "读取 CodeBuddy 成长任务",
+      );
       return { jobs: unwrapList(body, "jobs") };
     },
   };
