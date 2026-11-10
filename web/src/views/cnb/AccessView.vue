@@ -143,7 +143,7 @@ onMounted(async () => {
                 <Copy :size="15" />
               </button>
             </div>
-            <small>由服务的主机环境变量 GATEWAY_KEY 决定，默认遮蔽显示。</small>
+            <small>由服务首次启动时生成，或由环境变量 GATEWAY_KEY 指定，默认遮蔽显示。</small>
           </label>
         </div>
         <div class="access-security">
