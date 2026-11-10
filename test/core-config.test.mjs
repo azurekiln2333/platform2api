@@ -44,30 +44,32 @@ test("the panel key keeps the legacy name as an alias, new name wins", () => {
   assert.equal(configFromEnv({}).adminKey, undefined);
 });
 
-test("a service key override wins and the old token name is the last fallback", () => {
+test("a per-service credential beats the shared key, new name before old", () => {
   const overridden = configFromEnv({
     PANEL_ADMIN_KEY: "panel-admin-key-0001",
     CNB_ADMIN_KEY: "cnb-own-key-000001",
+    CNB_PLATFORM_TOKEN: "legacy-cnb-token-01",
     CODEBUDDY_PLATFORM_TOKEN: "legacy-codebuddy-token",
   });
   assert.deepEqual(
     overridden.systems.map((entry) => entry.token),
     [
-      // Explicit override wins over the shared key.
+      // The explicit override wins over the legacy token.
       "cnb-own-key-000001",
-      // The shared key wins over the legacy per-service token.
-      "panel-admin-key-0001",
+      // A legacy token still set for one service keeps working after upgrade.
+      "legacy-codebuddy-token",
+      // Nothing service-specific: the shared key.
       "panel-admin-key-0001",
     ],
   );
 
-  const legacyOnly = configFromEnv({
+  const blank = configFromEnv({
     PANEL_ADMIN_KEY: "panel-admin-key-0001",
     CODEBUDDY_ADMIN_KEY: "",
-    CODEBUDDY_PLATFORM_TOKEN: "legacy-codebuddy-token",
+    CODEBUDDY_PLATFORM_TOKEN: "",
   });
-  // A blank override falls back to the shared key, never to an empty credential.
-  assert.equal(legacyOnly.systems[1].token, "panel-admin-key-0001");
+  // Blank values fall through to the shared key, never to an empty credential.
+  assert.equal(blank.systems[1].token, "panel-admin-key-0001");
 });
 
 test("the public console URL accepts both names", () => {
@@ -178,8 +180,13 @@ test("build overlay points at the sibling service repositories", () => {
   assert.match(composeBuild, /\.\.\/cnb2api-panel/);
   assert.match(composeBuild, /\.\.\/codebuddy2api-main\/codebuddy2api/);
   assert.match(composeBuild, /\.\.\/zcode2api\/ZCode2api/);
+  // Local builds keep local names and stay out of the updater's reach.
   for (const image of ["platform2api", "cnb2api-panel", "codebuddy2api", "zcode2api"])
-    assert.match(composeBuild, new RegExp(`ghcr\\.io/azurekiln2333/${image}:latest`));
+    assert.match(composeBuild, new RegExp(`image: ${image}:local`));
+  assert.equal(composeBuild.includes("ghcr.io"), false);
+  assert.match(composeBuild, /pull_policy: build/);
+  assert.match(composeBuild, /watchtower\.enable: "false"/);
+  assert.equal((composeBuild.match(/<<: \*local/g) || []).length, 4);
 });
 
 test("dockerfile runs the panel entry point and exposes 9000", () => {

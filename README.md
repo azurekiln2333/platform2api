@@ -29,9 +29,11 @@ A deployment with distinct keys overrides one service at a time:
 | `PLATFORM_ADMIN_KEY` | Legacy alias for `PANEL_ADMIN_KEY`; the new name wins |
 
 The pre-0.2 `CNB_PLATFORM_TOKEN`, `CODEBUDDY_PLATFORM_TOKEN` and
-`ZCODE_PLATFORM_TOKEN` names are still read as a last fallback so existing
-deployments keep working, but the shipped compose and `.env.example` no longer
-use them.
+`ZCODE_PLATFORM_TOKEN` names are still read and, when set, are used for that
+service instead of the shared key, so a deployment that has not upgraded a
+service image yet keeps working. Remove them once all three services run a
+release that accepts the panel key (cnb2api-panel 1.3.0, codebuddy2api 1.6.0,
+zcode2api 1.2.0). The shipped compose and `.env.example` no longer use them.
 
 Login itself is unchanged: panel key **or** SSO. SSO is configured in each
 console and stored by that service, never in `.env`.
@@ -60,7 +62,8 @@ docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 `docker-compose.build.yaml` points at `../cnb2api-panel`,
 `../codebuddy2api-main/codebuddy2api` and `../zcode2api/ZCode2api`; override
 `CNB_BUILD_CONTEXT`, `CODEBUDDY_BUILD_CONTEXT` or `ZCODE_BUILD_CONTEXT` for a
-different layout.
+different layout. Locally built images are tagged `<name>:local` and are not
+auto-updated.
 
 ### Optional knobs
 

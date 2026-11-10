@@ -47,12 +47,14 @@ const SERVICES = [
 
 // One key opens all four consoles, so a service credential defaults to the
 // panel's own key. A deployment with distinct keys overrides one service at a
-// time; the pre-0.2 `*_PLATFORM_TOKEN` names remain the last fallback.
+// time. A pre-0.2 `*_PLATFORM_TOKEN` also beats the shared default: the panel
+// key is always set, and a service image that predates the shared key accepts
+// only that token.
 function servicesFromEnv(env, panelKey) {
   return SERVICES.map(({ system, urlEnv, keyEnv, legacyEnv, fallback }) => ({
     system,
     baseUrl: origin(env[urlEnv]) || fallback,
-    token: firstSet(env[keyEnv], panelKey, env[legacyEnv]) || "",
+    token: firstSet(env[keyEnv], env[legacyEnv], panelKey) || "",
   }));
 }
 
