@@ -26,6 +26,22 @@ jobs:
           npm ci --prefix web
           npm run build --prefix web
           npm test --prefix web
+      - name: Validate the Compose deployment
+        run: |
+          set -euo pipefail
+          # Only the panel key needs a value; every other setting is a console
+          # option or an image default (AC2).
+          cp .env.example .env
+          key=$(node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))")
+          sed -i "s/^PANEL_ADMIN_KEY=.*/PANEL_ADMIN_KEY=${key}/" .env
+          docker compose config >/dev/null
+          docker compose -f docker-compose.yaml -f docker-compose.build.yaml config >/dev/null
+          # The shipped deployment must not reintroduce per-service tokens.
+          if grep -Eq 'PLATFORM_TOKEN|GATEWAY_KEY|OIDC_' docker-compose.yaml; then
+            echo "docker-compose.yaml still declares a removed variable" >&2
+            exit 1
+          fi
+          rm .env
 
   image:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -70,3 +86,40 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [test, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          notes=$(printf '%s\n' \
+            "Unified panel image: \`$image:$RELEASE_TAG\`" \
+            '' \
+            'The Compose file pulls the four images independently. Service images' \
+            'are released from their own repositories:' \
+            '- `ghcr.io/azurekiln2333/cnb2api-panel:latest`' \
+            '- `ghcr.io/azurekiln2333/codebuddy2api:latest`' \
+            '- `ghcr.io/azurekiln2333/zcode2api:latest`' \
+            '' \
+            'Set `PANEL_ADMIN_KEY` in `.env`, then `docker compose up -d`.')
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" docker-compose.yaml .env.example --clobber
+          else
+            release_flags=(--notes "$notes" --verify-tag)
+            if [[ "$version" == *-* ]]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" docker-compose.yaml .env.example \
+              --title "platform2api v$version" "${release_flags[@]}"
+          fi

@@ -3,27 +3,30 @@
 #
 #   docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 #
-# The three services are built from their own checkouts, not from this repo.
-# Point the build contexts at the sibling repositories (R2: each service keeps
-# its independent repository and image).
+# The three services are built from their own checkouts, not from this repo,
+# so each image keeps its independent repository. Point the build contexts at
+# the sibling checkouts; the defaults match the usual layout.
 services:
   platform2api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: "${PLATFORM_IMAGE:-platform2api:local}"
+    image: "${PLATFORM_IMAGE:-ghcr.io/azurekiln2333/platform2api:latest}"
 
   cnb:
     build:
       context: ${CNB_BUILD_CONTEXT:-../cnb2api-panel}
       dockerfile: Dockerfile
+    image: "${CNB_IMAGE:-ghcr.io/azurekiln2333/cnb2api-panel:latest}"
 
   codebuddy:
     build:
       context: ${CODEBUDDY_BUILD_CONTEXT:-../codebuddy2api-main/codebuddy2api}
       dockerfile: Dockerfile
+    image: "${CODEBUDDY_IMAGE:-ghcr.io/azurekiln2333/codebuddy2api:latest}"
 
   zcode:
     build:
       context: ${ZCODE_BUILD_CONTEXT:-../zcode2api/ZCode2api}
       dockerfile: Dockerfile
+    image: "${ZCODE_IMAGE:-ghcr.io/azurekiln2333/zcode2api:latest}"
