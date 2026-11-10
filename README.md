@@ -72,6 +72,7 @@ container reads.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `PLATFORM_PORT` / `CNB_PORT` / `CODEBUDDY_PORT` / `ZCODE_PORT` | `9000` / `9002` / `8787` / `12283` | Host ports; the container ports and the panel's internal service URLs do not change |
 | `BIND_HOST` | `127.0.0.1` | Host interface the four ports are published on |
 | `WATCHTOWER_POLL_INTERVAL` | `600` | Seconds between image checks |
 | `TZ` | image default | Container time zone |

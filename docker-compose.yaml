@@ -9,11 +9,12 @@
 #   docker compose pull
 #   docker compose up -d
 #
-# Panel:      http://127.0.0.1:9000
-# CNB:        http://127.0.0.1:9002
-# CodeBuddy:  http://127.0.0.1:8787
-# ZCode:      http://127.0.0.1:12283
+# Panel:      http://127.0.0.1:${PLATFORM_PORT:-9000}
+# CNB:        http://127.0.0.1:${CNB_PORT:-9002}
+# CodeBuddy:  http://127.0.0.1:${CODEBUDDY_PORT:-8787}
+# ZCode:      http://127.0.0.1:${ZCODE_PORT:-12283}
 #
+# The four *_PORT variables in .env only change the host side of each mapping.
 # Everything else — container ports, data paths, health checks, SSO settings,
 # gateway keys — is a console setting or an image default. See README.md for
 # the optional knobs (BIND_HOST, WATCHTOWER_POLL_INTERVAL, TZ).
@@ -40,12 +41,16 @@ services:
     <<: *app
     image: "${PLATFORM_IMAGE:-ghcr.io/azurekiln2333/platform2api:latest}"
     environment:
+      # .env reaches the container through env_file, and the panel reads
+      # PLATFORM_PORT as its listen port. Pin it so a custom host port only
+      # changes the mapping below.
+      PLATFORM_PORT: "9000"
       # Compose DNS: the panel never uses loopback defaults inside a container.
       CNB_URL: http://cnb:9002
       CODEBUDDY_URL: http://codebuddy:8787
       ZCODE_URL: http://zcode:12283
     ports:
-      - "${BIND_HOST:-127.0.0.1}:9000:9000"
+      - "${BIND_HOST:-127.0.0.1}:${PLATFORM_PORT:-9000}:9000"
     volumes:
       # Panel-owned state only: SSO settings, service URLs, account tags.
       - ./data/panel:/app/data
@@ -65,7 +70,7 @@ services:
       PANEL_PUBLIC_URL: ${CNB_PUBLIC_URL:-}
     ports:
       # Model/inference traffic stays on the service's own endpoint.
-      - "${BIND_HOST:-127.0.0.1}:9002:9002"
+      - "${BIND_HOST:-127.0.0.1}:${CNB_PORT:-9002}:9002"
     volumes:
       - ./data/cnb/data:/app/data
       - ./data/cnb/logs:/app/logs
@@ -76,7 +81,7 @@ services:
     environment:
       PUBLIC_ORIGIN: ${CODEBUDDY_PUBLIC_URL:-}
     ports:
-      - "${BIND_HOST:-127.0.0.1}:8787:8787"
+      - "${BIND_HOST:-127.0.0.1}:${CODEBUDDY_PORT:-8787}:8787"
     volumes:
       # One SQLite directory per instance, never shared.
       - ./data/codebuddy:/data/auth
@@ -87,7 +92,7 @@ services:
     environment:
       PANEL_PUBLIC_URL: ${ZCODE_PUBLIC_URL:-}
     ports:
-      - "${BIND_HOST:-127.0.0.1}:12283:12283"
+      - "${BIND_HOST:-127.0.0.1}:${ZCODE_PORT:-12283}:12283"
     volumes:
       - ./data/zcode:/app/data
     security_opt:

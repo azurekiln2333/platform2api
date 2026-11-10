@@ -99,21 +99,28 @@ test("service urls must be http(s) origins", () => {
   assert.equal(normalizeServiceUrl("https://cnb.example.com:9002"), "https://cnb.example.com:9002");
 });
 
-test("env example keeps only the panel key and the four public URLs", () => {
-  const assignments = envExample
-    .split(/\r?\n/)
-    .filter((line) => line.trim() && !line.trim().startsWith("#"))
-    .map((line) => line.split("=")[0].trim());
-  assert.deepEqual(assignments, [
-    "PANEL_ADMIN_KEY",
-    "PLATFORM_PUBLIC_URL",
-    "CNB_PUBLIC_URL",
-    "CODEBUDDY_PUBLIC_URL",
-    "ZCODE_PUBLIC_URL",
-  ]);
-  // Every value starts empty: nothing else needs setting (AC1).
-  for (const line of envExample.split(/\r?\n/))
-    if (line.includes("=") && !line.trim().startsWith("#")) assert.match(line, /^[A-Z_]+=$/);
+test("env example keeps the panel key, the four public URLs and the four host ports", () => {
+  const lines = envExample.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith("#"));
+  assert.deepEqual(
+    lines.map((line) => line.split("=")[0].trim()),
+    [
+      "PANEL_ADMIN_KEY",
+      "PLATFORM_PUBLIC_URL",
+      "CNB_PUBLIC_URL",
+      "CODEBUDDY_PUBLIC_URL",
+      "ZCODE_PUBLIC_URL",
+      "PLATFORM_PORT",
+      "CNB_PORT",
+      "CODEBUDDY_PORT",
+      "ZCODE_PORT",
+    ],
+  );
+  // Only the panel key needs a value (AC1); the ports show their defaults.
+  const ports = { PLATFORM_PORT: "9000", CNB_PORT: "9002", CODEBUDDY_PORT: "8787", ZCODE_PORT: "12283" };
+  for (const line of lines) {
+    const [name, value] = line.split("=");
+    assert.equal(value, ports[name] ?? "", `${name} must default to ${ports[name] ?? "empty"}`);
+  }
   assert.equal(/PLATFORM_TOKEN|GATEWAY_KEY|OIDC_/.test(envExample), false);
 });
 
@@ -125,11 +132,19 @@ test("compose defines the panel, three services and the updater", () => {
   assert.match(compose, /CNB_URL: http:\/\/cnb:9002/);
   assert.match(compose, /CODEBUDDY_URL: http:\/\/codebuddy:8787/);
   assert.match(compose, /ZCODE_URL: http:\/\/zcode:12283/);
-  // Fixed host ports, one bind host, no port variables (D5).
-  for (const port of ["9000", "9002", "8787", "12283"])
-    assert.match(compose, new RegExp(`\\$\\{BIND_HOST:-127\\.0\\.0\\.1\\}:${port}:${port}`));
-  assert.equal(/PLATFORM_PORT|SERVICE_BIND_HOST|PANEL_PORT/.test(compose), false);
-  assert.match(compose, /\$\{BIND_HOST:-127\.0\.0\.1\}/);
+  // Host ports are configurable; the container side stays fixed.
+  for (const [name, port] of [
+    ["PLATFORM_PORT", "9000"],
+    ["CNB_PORT", "9002"],
+    ["CODEBUDDY_PORT", "8787"],
+    ["ZCODE_PORT", "12283"],
+  ])
+    assert.match(compose, new RegExp(`\\$\\{BIND_HOST:-127\\.0\\.0\\.1\\}:\\$\\{${name}:-${port}\\}:${port}`));
+  // env_file hands PLATFORM_PORT to the panel, which listens on it: the
+  // container value must stay pinned so a custom host port cannot move it.
+  const panel = compose.split("\n  platform2api:")[1].split(/\n  [a-z0-9-]+:\n/)[0];
+  assert.match(panel, /PLATFORM_PORT: "9000"/);
+  assert.equal(/SERVICE_BIND_HOST|PANEL_PORT/.test(compose), false);
 });
 
 test("compose loads .env once and leaves container settings to the images", () => {
