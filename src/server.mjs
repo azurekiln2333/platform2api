@@ -19,24 +19,40 @@ const list = (value) =>
 
 const origin = (value) => (value || "").replace(/\/+$/, "");
 
+// The first defined, non-empty value wins; legacy names stay accepted.
+const firstSet = (...values) => {
+  for (const value of values) if (typeof value === "string" && value) return value;
+  return undefined;
+};
+
 // Compose service names are reachable by DNS; the host-published ports stay
-// available for direct model calls (AC7).
+// available for direct model calls.
 const SERVICES = [
-  { system: "cnb", urlEnv: "CNB_URL", tokenEnv: "CNB_PLATFORM_TOKEN", fallback: "http://127.0.0.1:9002" },
+  { system: "cnb", urlEnv: "CNB_URL", keyEnv: "CNB_ADMIN_KEY", legacyEnv: "CNB_PLATFORM_TOKEN", fallback: "http://127.0.0.1:9002" },
   {
     system: "codebuddy",
     urlEnv: "CODEBUDDY_URL",
-    tokenEnv: "CODEBUDDY_PLATFORM_TOKEN",
+    keyEnv: "CODEBUDDY_ADMIN_KEY",
+    legacyEnv: "CODEBUDDY_PLATFORM_TOKEN",
     fallback: "http://127.0.0.1:8787",
   },
-  { system: "zcode", urlEnv: "ZCODE_URL", tokenEnv: "ZCODE_PLATFORM_TOKEN", fallback: "http://127.0.0.1:12283" },
+  {
+    system: "zcode",
+    urlEnv: "ZCODE_URL",
+    keyEnv: "ZCODE_ADMIN_KEY",
+    legacyEnv: "ZCODE_PLATFORM_TOKEN",
+    fallback: "http://127.0.0.1:12283",
+  },
 ];
 
-function servicesFromEnv(env) {
-  return SERVICES.map(({ system, urlEnv, tokenEnv, fallback }) => ({
+// One key opens all four consoles, so a service credential defaults to the
+// panel's own key. A deployment with distinct keys overrides one service at a
+// time; the pre-0.2 `*_PLATFORM_TOKEN` names remain the last fallback.
+function servicesFromEnv(env, panelKey) {
+  return SERVICES.map(({ system, urlEnv, keyEnv, legacyEnv, fallback }) => ({
     system,
     baseUrl: origin(env[urlEnv]) || fallback,
-    token: env[tokenEnv] || "",
+    token: firstSet(env[keyEnv], panelKey, env[legacyEnv]) || "",
   }));
 }
 
@@ -62,15 +78,16 @@ export function configFromEnv(env = process.env) {
   const port = Number(env.PLATFORM_PORT || 9000);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("PLATFORM_PORT must be a valid port");
+  const adminKey = firstSet(env.PANEL_ADMIN_KEY, env.PLATFORM_ADMIN_KEY);
   return {
     port,
     host: env.PLATFORM_HOST || "0.0.0.0",
-    adminKey: env.PLATFORM_ADMIN_KEY,
+    adminKey,
     dataDir: resolve(env.PLATFORM_DATA_DIR || "data/panel"),
-    publicUrl: origin(env.PLATFORM_PUBLIC_URL),
+    publicUrl: origin(firstSet(env.PANEL_PUBLIC_URL, env.PLATFORM_PUBLIC_URL) || ""),
     allowLocal: flag("PLATFORM_ALLOW_LOCAL_UPSTREAM", env.PLATFORM_ALLOW_LOCAL_UPSTREAM) === true,
     ssoBootstrap: ssoBootstrapFromEnv(env),
-    systems: servicesFromEnv(env),
+    systems: servicesFromEnv(env, adminKey),
   };
 }
 
@@ -92,7 +109,7 @@ if (isEntry()) {
     panel.server.listen(port, host, () => {
       console.log(`[panel] http://${host}:${port}`);
       for (const service of config.systems)
-        console.log(`[panel] ${service.system} -> ${service.baseUrl}${service.token ? "" : " (no token)"}`);
+        console.log(`[panel] ${service.system} -> ${service.baseUrl}${service.token ? "" : " (no key)"}`);
     });
     for (const signal of ["SIGINT", "SIGTERM"])
       process.on(signal, () => {

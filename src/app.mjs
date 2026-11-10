@@ -86,7 +86,7 @@ export function createPanelServer(options) {
     oidcCookieName = "platform_oidc",
   } = options;
   if (!adminKey || adminKey.length < ADMIN_KEY_MIN)
-    throw new Error(`PLATFORM_ADMIN_KEY must contain at least ${ADMIN_KEY_MIN} characters`);
+    throw new Error(`PANEL_ADMIN_KEY must contain at least ${ADMIN_KEY_MIN} characters`);
   validateOrigin(publicUrl);
 
   const store = new PanelStore(dataDir, { allowLocal });

@@ -40,7 +40,7 @@ factory — the registry normalizes all three forms.
 {
   system: "cnb",
   baseUrl: "http://cnb:9002",   // no trailing slash
-  token: "…" | "",              // PLATFORM_TOKEN; empty means no Authorization header
+  token: "…" | "",              // panel key (management bearer); empty means no Authorization header
   timeoutMs: 15000,
   client,                       // see below — use this, not bare fetch
   logger: { warn(message), error(message) },

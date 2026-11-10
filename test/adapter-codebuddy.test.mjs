@@ -263,7 +263,7 @@ test("health distinguishes a reachable service from a rejected token", async (t)
   });
   const health = await rejected.health();
   assert.equal(health.status, "down");
-  assert.match(health.detail, /PLATFORM_TOKEN/);
+  assert.match(health.detail, /管理密钥/);
 });
 
 test("an unreachable service reports down without throwing", async () => {

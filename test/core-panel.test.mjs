@@ -81,7 +81,7 @@ const client = (base) => {
 test("panel refuses a weak admin key", () => {
   assert.throws(
     () => createPanelServer({ adminKey: "short", dataDir: mkdtempSync(join(tmpdir(), "p-")) }),
-    /PLATFORM_ADMIN_KEY/,
+    /PANEL_ADMIN_KEY/,
   );
 });
 

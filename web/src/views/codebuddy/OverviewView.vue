@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
       <div v-if="!data" class="empty-filter">
         <CircleAlert :size="28" />
         <h3>暂无概览数据</h3>
-        <p>检查 CodeBuddy 服务是否运行，以及面板保存的服务地址与令牌是否正确。</p>
+        <p>检查 CodeBuddy 服务是否运行，以及面板保存的服务地址与密钥是否正确。</p>
       </div>
     </template>
   </section>

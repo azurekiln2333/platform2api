@@ -1,10 +1,9 @@
 /**
  * CodeBuddy (codebuddy2api) management adapter.
  *
- * Talks to the service's existing `/admin/*` API through the env-gated
- * `PLATFORM_TOKEN` credential (see branch `platform-token` in the codebuddy2api
- * repository). The panel never forwards model traffic and never touches the
- * service's SQLite directory.
+ * Talks to the service's existing `/admin/*` API through the panel key
+ * (sent as a management bearer). The panel never forwards model traffic and
+ * never touches the service's SQLite directory.
  *
  * Contract: ./README.md. Everything goes through `context.client`, which owns
  * bearer auth, timeouts and the response size cap.
@@ -115,7 +114,7 @@ export default function createAdapter(context) {
                 : "degraded",
             detail:
               response.status === 401 || response.status === 403
-                ? "服务拒绝了 PLATFORM_TOKEN，请检查面板与服务的令牌是否一致"
+                ? "服务拒绝了管理密钥，请检查面板与服务的面板密钥是否一致"
                 : `CodeBuddy 返回 ${response.status}`,
           };
         return { status: "ok" };

@@ -4,9 +4,9 @@ import { InputError } from "../http.mjs";
 
 // CNB adapter: one service (`cnb2api-panel`) reached over its existing
 // management routes. Contract: ./README.md. Every request carries
-// `Authorization: Bearer <PLATFORM_TOKEN>` through the shared client, so the
-// env-gated service patch authorises panel-originated calls without a browser
-// session (design.md "Service auth"). CNB accepts a missing Origin on mutating
+// `Authorization: Bearer <panel key>` through the shared client, so the
+// service authorises panel-originated calls without a browser session
+// (design.md "Management bearer"). CNB accepts a missing Origin on mutating
 // `/api/` calls and rejects a mismatched one, so nothing here sets Origin.
 
 const SYSTEM = "cnb";

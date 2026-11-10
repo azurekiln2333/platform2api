@@ -48,7 +48,9 @@ onMounted(() => {
         <span class="eyebrow"><i class="blue-line" /> SETTINGS</span>
         <h1>面板设置</h1>
         <p>
-          面板的服务地址、访问令牌与管理密钥全部来自容器环境变量；这里只读展示接入状态，令牌不会回显。
+          面板的服务地址与密钥来自部署环境；这里只读展示接入状态，密钥不会回显。
+          三家服务默认接受面板自己的密钥，可用 CNB_ADMIN_KEY / CODEBUDDY_ADMIN_KEY /
+          ZCODE_ADMIN_KEY 单独覆盖。
         </p>
       </div>
       <div class="heading-actions">
@@ -74,7 +76,7 @@ onMounted(() => {
               <th>系统</th>
               <th>服务</th>
               <th>内部地址</th>
-              <th>访问令牌</th>
+              <th>管理密钥</th>
               <th>健康状态</th>
             </tr>
           </thead>

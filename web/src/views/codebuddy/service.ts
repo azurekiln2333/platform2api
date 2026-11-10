@@ -5,8 +5,8 @@ import { api } from '../../api.ts'
  * `/api/p/codebuddy/<service path>`. `api()` adds the session cookie, error
  * diagnostics and the 401 session-expiry event.
  *
- * Management authorization happens server-side with the service's
- * `PLATFORM_TOKEN`; the browser never sees it, and SSO/CSRF are irrelevant here.
+ * Management authorization happens server-side with the service's panel key;
+ * the browser never sees it, and SSO/CSRF are irrelevant here.
  */
 export const codebuddy = <T>(path: string, method = 'GET', data?: unknown): Promise<T> =>
   api<T>(`/p/codebuddy${path}`, method, data)
