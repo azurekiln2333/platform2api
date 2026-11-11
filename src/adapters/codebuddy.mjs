@@ -2,8 +2,8 @@
  * CodeBuddy (codebuddy2api) management adapter.
  *
  * Talks to the service's existing `/admin/*` API through the panel key
- * (sent as a management bearer). The panel never forwards model traffic and
- * never touches the service's SQLite directory.
+ * (sent as a management bearer). Inference uses separate internal credentials;
+ * the panel never touches the service's SQLite directory.
  *
  * Contract: ./README.md. Everything goes through `context.client`, which owns
  * bearer auth, timeouts and the response size cap.
@@ -18,6 +18,8 @@
  */
 import { AdapterError } from "./client.mjs";
 import { InputError } from "../http.mjs";
+import { consoleDayStart } from "../console-data.mjs";
+import { createCodebuddyConsole, codebuddyAccountFields, redactCodebuddy } from "./codebuddy-console.mjs";
 
 const CREDENTIAL_TOGGLES = [
   "enabled",
@@ -39,14 +41,14 @@ const MAX_REFRESH_TOKENS = 50;
 
 /** Stable, URL-safe credential id: the service keys credentials by file name. */
 const nativeIdOf = (record) => {
-  const raw = String(record?.name ?? record?.id ?? record?.file ?? "");
+  const raw = String(record?.account_key ?? record?.id ?? record?.name ?? record?.file ?? "");
   return raw.replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 200);
 };
 
 const statusOf = (record) => {
   if (record?.disabled === true || record?.enabled === false) return "disabled";
   if (record?.cooldown_until || record?.cooldown) return "cooldown";
-  if (record?.error || record?.invalid === true) return "error";
+  if (record?.error || record?.invalid === true || record?.auth_broken || record?.token_expired || record?.sync_error) return "error";
   return "ready";
 };
 
@@ -92,6 +94,56 @@ const ensureOk = (response, what) => {
   return response.body;
 };
 
+// The native dashboard uses UTC calendar days. Fetch a supported multi-day
+// hourly window, then derive the console's UTC+8 day without relabeling UTC
+// totals. Missing hourly coverage or unknown metrics remain explicitly unknown.
+const todaySummary = (body, now) => {
+  const hourMs = 3600000;
+  const start = consoleDayStart(now);
+  const currentHour = Math.floor(now / hourMs) * hourMs;
+  const buckets = new Map();
+  let duplicate = false;
+  for (const row of Array.isArray(body?.series) ? body.series : []) {
+    if (!Number.isFinite(row.bucket)) continue;
+    const at = row.bucket * 1000;
+    if (at < start || at > currentHour || at % hourMs !== 0) continue;
+    if (buckets.has(at)) duplicate = true;
+    buckets.set(at, row);
+  }
+  let complete = !duplicate && body?.range?.partial !== true && body?.degraded !== true;
+  const granularity = body?.range?.granularity ?? body?.granularity;
+  if (granularity && granularity !== "hour") complete = false;
+  for (let at = start; at <= currentHour; at += hourMs) if (!buckets.has(at)) complete = false;
+  const known = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const metric = (row, field) => {
+    const value = row[field];
+    if (field.endsWith("_tokens")) {
+      // The native dashboard pads confirmed empty hours with null token sums.
+      if (row.requests === 0 && value == null) return 0;
+      const samples = row[`${field}_known`];
+      if (samples !== undefined && (!known(samples) || !known(row.requests) || samples < row.requests)) return null;
+    }
+    return known(value) ? value : null;
+  };
+  const sum = (...fields) => {
+    if (!complete) return null;
+    let total = 0;
+    for (const row of buckets.values()) for (const field of fields) {
+      const value = metric(row, field);
+      if (value === null) return null;
+      total += value;
+    }
+    return total;
+  };
+  const requestsToday = sum("requests"), tokensToday = sum("input_tokens", "output_tokens"), errorsToday = sum("error", "cancelled");
+  const partial = !complete || [requestsToday, tokensToday, errorsToday].some((value) => value === null);
+  return {
+    requestsToday, tokensToday, errorsToday, partial,
+    ...(partial ? { healthMessage: "今日统计数据不完整，缺失指标暂不可确认" } : {}),
+    hourly: [...buckets].sort(([a], [b]) => a - b).map(([at, row]) => ({ hour: new Date(at).toISOString(), requests: known(row.requests) ? row.requests : null })),
+  };
+};
+
 export default function createAdapter(context) {
   const { system = "codebuddy", client } = context || {};
   if (!client)
@@ -99,7 +151,7 @@ export default function createAdapter(context) {
 
   const request = (path, options) => client.request(path, options);
 
-  return {
+  const adapter = {
     system,
 
     /** Never throws for an expected outage: the console renders the state. */
@@ -131,10 +183,12 @@ export default function createAdapter(context) {
      * AdapterError so the panel marks usage unavailable instead of zero.
      */
     async overview(params = {}) {
+      const todayMode = params.days === undefined;
+      const now = Date.now();
       const days = DASHBOARD_DAYS.includes(Number(params.days))
         ? Number(params.days)
         : 7;
-      const granularity = GRANULARITIES.includes(params.granularity)
+      const granularity = todayMode ? "hour" : GRANULARITIES.includes(params.granularity)
         ? params.granularity
         : "auto";
       const response = await request("/admin/dashboard", {
@@ -142,15 +196,17 @@ export default function createAdapter(context) {
       });
       const body = ensureOk(response, "读取 CodeBuddy 概览");
       const totals = body?.totals ?? body?.summary ?? {};
+      const today = todayMode ? todaySummary(body, now) : null;
       return {
         system,
-        days,
+        days: todayMode ? 1 : days,
         // Keep the service's own units; the panel never converts or merges them.
-        requests: totals.requests ?? totals.request_count ?? null,
+        requests: todayMode ? today.requestsToday : totals.requests ?? totals.request_count ?? null,
         credits: totals.credits ?? null,
         health: body?.health ?? null,
         storage: body?.storage ?? null,
         granularity: body?.granularity ?? granularity,
+        ...(today ?? {}),
         raw: body,
       };
     },
@@ -170,7 +226,8 @@ export default function createAdapter(context) {
           tags: Array.isArray(record?.tags)
             ? record.tags.map(String).slice(0, 20)
             : [],
-          raw: record,
+          ...codebuddyAccountFields(record),
+          raw: redactCodebuddy(record),
         };
       });
     },
@@ -628,4 +685,9 @@ export default function createAdapter(context) {
       return { jobs: unwrapList(body, "jobs") };
     },
   };
+  adapter.console = createCodebuddyConsole({ client, baseUrl: context.baseUrl || client.baseUrl });
+  adapter.capabilities = adapter.console.capabilities;
+  adapter.inference = adapter.console.inference;
+  adapter.ensureUpstreamCredential = adapter.console.ensureUpstreamCredential;
+  return adapter;
 }

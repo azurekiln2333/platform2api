@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { AdapterError } from "./client.mjs";
 import { InputError } from "../http.mjs";
+import { descriptor, redact } from "../console-data.mjs";
+import { createCnbConsole } from "./cnb-console.mjs";
 
 // CNB adapter: one service (`cnb2api-panel`) reached over its existing
 // management routes. Contract: ./README.md. Every request carries
@@ -16,10 +18,10 @@ const CREDENTIAL_INPUTS = Object.freeze([
   { name: "name", label: "账号名称", required: true, placeholder: "例如 CNB 主账号" },
   {
     name: "proxyKey",
-    label: "工作区 PROXY_KEY",
+    label: "工作区密钥",
     secret: true,
     required: true,
-    placeholder: "工作区环境变量 PROXY_KEY",
+    placeholder: "填写工作区密钥",
   },
   { name: "pat", label: "CNB 个人令牌", secret: true, placeholder: "可选，用于探活与额度同步" },
   { name: "repo", label: "仓库路径", placeholder: "组织/仓库" },
@@ -86,7 +88,29 @@ const toEntry = (account) => ({
   enabled: account?.enabled !== false,
   quota: normalizeQuota(account),
   tags: [SYSTEM],
-  raw: account ?? null,
+  lastUsedAt: account?.lastUsedAt ?? account?.lastRequestAt ?? null,
+  primary: String(account?.repo || account?.endpoint || ""),
+  display: [
+    descriptor("repo", "仓库", account?.repo, "mono"),
+    descriptor("endpoint", "工作区地址", redact(account?.endpoint), "mono"),
+    descriptor("upstreamMode", "上游模式", account?.upstreamMode, "badge"),
+    descriptor("priority", "优先级", account?.priority),
+    descriptor("models", "模型", Array.isArray(account?.models) ? account.models.join("、") : null),
+    descriptor("quota", "额度", normalizeQuota(account), "quota"),
+    descriptor("quotaSyncedAt", "额度同步时间", account?.quota?.syncedAt, "time"),
+    descriptor("lastProbeAt", "最近探活", account?.lastProbeAt, "time"),
+    descriptor("lastError", "最近错误", redact(account?.lastError)),
+    descriptor("cooldownUntil", "冷却截止", account?.cooldownUntil, "time"),
+    descriptor("hasPat", "已保存个人令牌", account?.hasPat, "bool"),
+    descriptor("hasProxyKey", "已保存工作区密钥", account?.hasProxyKey, "bool"),
+  ],
+  actions: [
+    { id: "probe", label: "探测账号" }, { id: "inference-probe", label: "探测推理" },
+    { id: "quota", label: "同步额度" }, { id: "wake", label: "启动工作区" },
+    { id: account?.enabled === false ? "enable" : "disable", label: account?.enabled === false ? "启用账号" : "停用账号" },
+    { id: "delete", label: "删除账号", danger: true, confirm: `删除账号「${account?.name || account?.id || ""}」` },
+  ],
+  raw: account ? redact(Object.fromEntries(Object.entries(account).filter(([key]) => !["secrets", "registrationToken", "credentials"].includes(key)))) : null,
 });
 
 export default function createCnbAdapter(context = {}) {
@@ -206,7 +230,9 @@ export default function createCnbAdapter(context = {}) {
 
   async function accountAction(nativeId, action, payload = {}) {
     const id = requireId(nativeId);
-    const spec = ACCOUNT_ACTIONS.get(String(action || "").toLowerCase());
+    const name = String(action || "").toLowerCase();
+    if (["enable", "disable"].includes(name)) return accountAction(id, "update", { enabled: name === "enable" });
+    const spec = ACCOUNT_ACTIONS.get(name);
     if (!spec)
       throw new InputError(`不支持的 CNB 账号操作：${action}`, 400, { code: "action_unsupported" });
     const { body } = await service(`/api/accounts/${encodeURIComponent(id)}${spec.suffix ?? ""}`, {
@@ -284,7 +310,7 @@ export default function createCnbAdapter(context = {}) {
         return {
           flowId: id,
           status: "pending",
-          message: "请填写账号名称与工作区 PROXY_KEY。",
+          message: "请填写账号名称与工作区密钥。",
           inputs: CREDENTIAL_INPUTS.map((input) => ({ ...input })),
         };
       const created = await serviceJson("/api/accounts", {
@@ -358,6 +384,7 @@ export default function createCnbAdapter(context = {}) {
     return result;
   }
 
+  const consoleApi = createCnbConsole({ serviceJson });
   return {
     system: SYSTEM,
     baseUrl,
@@ -370,6 +397,18 @@ export default function createCnbAdapter(context = {}) {
     pollAuth,
     completeAuth,
     call,
+    console: consoleApi,
+    keyManagement: { revealPaths: ["/api/access/key"] },
+    capabilities: consoleApi.capabilities,
+    inference: () => ({ url: baseUrl, routes: ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/messages/count_tokens"] }),
+    // CNB currently offers only one built-in gateway credential. This method
+    // is for the server-side gateway bootstrap and must never be serialized by
+    // a management route; the gateway encrypts its result in panel SQLite.
+    async ensureUpstreamCredential() {
+      const data = await serviceJson("/api/access/key", { method: "POST", body: {} });
+      if (typeof data.key !== "string" || !data.key) throw new AdapterError("CNB 尚未配置可用网关密钥", { status: 502, code: "upstream_key_missing" });
+      return { secret: data.key, id: "builtin", name: "CNB 内置网关密钥", shared: true };
+    },
   };
 }
 

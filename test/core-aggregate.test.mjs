@@ -14,7 +14,6 @@ import { normalizeHealth, systemOverview } from "../src/overview.mjs";
 const ADMIN = "platform-test-admin-key";
 const tempDir = (t) => {
   const dir = mkdtempSync(join(tmpdir(), "platform2api-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 };
 
@@ -80,6 +79,7 @@ const panel = async (t, options = {}) => {
   t.after(async () => {
     instance.server.closeAllConnections?.();
     await new Promise((resolve) => instance.server.close(resolve));
+    rmSync(instance.store.directory, { recursive: true, force: true });
   });
   instance.server.listen(0, "127.0.0.1");
   await once(instance.server, "listening");
@@ -375,6 +375,7 @@ test("stub adapters keep the panel bootable and report unavailable", async (t) =
   t.after(async () => {
     instance.server.closeAllConnections?.();
     await new Promise((resolve) => instance.server.close(resolve));
+    rmSync(instance.store.directory, { recursive: true, force: true });
   });
   instance.server.listen(0, "127.0.0.1");
   await once(instance.server, "listening");

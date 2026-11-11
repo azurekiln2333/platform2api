@@ -14,7 +14,7 @@ const FORWARD_HEADERS = {
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 
 export const proxyTarget = (path) => {
-  const match = /^\/api\/p\/([a-z]+)(\/.*)?$/.exec(path);
+  const match = /^\/api\/p\/([a-z][a-z0-9_-]{0,63})(\/.*)?$/.exec(path);
   if (!match) return null;
   return { system: match[1], path: match[2] && match[2] !== "" ? match[2] : "/" };
 };
@@ -34,10 +34,19 @@ export const assertSafePath = (path) => {
   }
 };
 
-export async function proxyRequest({ req, registry, system, path, search, maxBytes }) {
+export async function proxyRequest({ req, registry, system, path, search, maxBytes, gatewayStore }) {
   if (!METHODS.has(req.method)) throw new InputError("method not allowed", 405);
   assertSafePath(path);
   const adapter = registry.get(system);
+  const policy = adapter.console?.keyManagement ?? adapter.keyManagement;
+  const canonical = `/${path.split("/").filter(Boolean).map(decodeURIComponent).join("/")}`;
+  const internal = new Set(gatewayStore?.internalKeyIds(system) ?? []);
+  if (policy) {
+    const targetId = policy.prefix && canonical.startsWith(policy.prefix) ? canonical.slice(policy.prefix.length).split("/")[0] : null;
+    if (targetId && internal.has(targetId)) throw new InputError("此密钥由统一入口管理", 403);
+    if (policy.revealPaths?.includes(canonical) || targetId && policy.revealSuffix && canonical.endsWith(policy.revealSuffix))
+      throw new InputError("完整密钥仅在创建或轮换时显示", 403);
+  }
   if (typeof adapter.call !== "function")
     throw new AdapterError(`${system} 适配器不支持透传`, { status: 501, code: "adapter_not_implemented" });
   const headers = {};
@@ -58,6 +67,16 @@ export async function proxyRequest({ req, registry, system, path, search, maxByt
     if (error instanceof InputError) throw error;
     if (error instanceof AdapterError || error?.name === "AdapterError") throw error;
     throw new AdapterError(`${system} 服务请求失败`, { status: 502, code: "upstream_error", cause: error });
+  }
+  if (policy?.list === canonical && req.method === "GET" && internal.size && result.status >= 200 && result.status < 300) {
+    let value = result.body;
+    if (Buffer.isBuffer(value) || typeof value === "string") {
+      try { value = JSON.parse(value.toString()); } catch { throw new AdapterError("渠道密钥列表格式不正确", { code: "upstream_shape" }); }
+    }
+    const rows = Array.isArray(value) ? value : value?.[policy.items];
+    if (!Array.isArray(rows)) throw new AdapterError("渠道密钥列表格式不正确", { code: "upstream_shape" });
+    const publicRows = rows.filter((row) => !internal.has(String(row.id ?? row.nativeId)));
+    result = { ...result, body: Array.isArray(value) ? publicRows : { ...value, [policy.items]: publicRows, ...(typeof value.total === "number" ? { total: Math.max(0, value.total - rows.length + publicRows.length) } : {}) } };
   }
   return normalizeResult(result, { system, path });
 }

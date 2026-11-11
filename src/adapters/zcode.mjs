@@ -1,5 +1,8 @@
 import { AdapterError } from "./client.mjs";
 import { InputError } from "../http.mjs";
+import { createZcodeConsole } from "./zcode-console.mjs";
+import { descriptor, redact } from "../console-data.mjs";
+import { isAccountNativeId } from "../account-id.mjs";
 
 // ZCode adapter: one service (`zcode2api` / zcgw-server.mjs) reached over its
 // console API plus its root legacy routes. Contract: ./README.md.
@@ -14,7 +17,6 @@ import { InputError } from "../http.mjs";
 //   - Enrollment is an interactive onboard flow (`/api/onboard/start|poll|redeem`).
 
 const SYSTEM = "zcode";
-const LABEL = /^[A-Za-z0-9._:~-]{1,200}$/;
 const FLOW_ID = /^[A-Za-z0-9._:~-]{1,300}$/;
 const ACTION_TIMEOUT_MS = 120000;
 
@@ -52,7 +54,7 @@ export const normalizeQuota = (account) => {
 
 /** ZCode identifies an account by `label`; `disabled` is the stored switch. */
 export const accountLabel = (account) =>
-  String(account?.label ?? account?.id ?? "").trim();
+  String(account?.label ?? account?.id ?? "");
 
 export const accountState = (account) => {
   if (!account) return "unknown";
@@ -76,7 +78,11 @@ const toEntry = (account) => {
     quota: normalizeQuota(account),
     tags: [SYSTEM],
     detail: detail || null,
-    raw: account ?? null,
+    lastUsedAt: account?.checkedAt ?? null,
+    primary: detail,
+    display: [descriptor("realm", "区域", account?.group ?? account?.realm, "badge"), descriptor("identity", "身份", detail), descriptor("cooldownUntil", "冷却至", account?.cooldownUntil, "time"), descriptor("checkedAt", "最近探测", account?.checkedAt, "time"), descriptor("lastError", "最近错误", account?.lastError), descriptor("quotaSources", "额度明细", account?.quotaSources), descriptor("eligibility", "领取资格", account?.eligibility)],
+    actions: [{ id: "refresh", label: "刷新额度与资格" }, { id: "probe", label: "探测" }, { id: "claim-start", label: "准备领取" }, { id: "claim", label: "领取 Coding Plan" }],
+    raw: redact(account ?? null),
   };
 };
 
@@ -194,9 +200,11 @@ export default function createZcodeAdapter(context = {}) {
   }
 
   async function accountAction(nativeId, action, payload = {}) {
-    const label = String(nativeId ?? "").trim();
-    if (!LABEL.test(label)) throw new InputError("账号 ID 格式不正确", 400, { param: "id" });
-    const name = String(action || "").toLowerCase();
+    const label = String(nativeId ?? "");
+    if (!isAccountNativeId(label)) throw new InputError("账号 ID 格式不正确", 400, { param: "id" });
+    let name = String(action || "").toLowerCase();
+    if (name === "probe") name = "selftest";
+    if (name === "enable" || name === "disable") { payload = { enabled: name === "enable" }; name = "update"; }
     if (name === "selftest-result") {
       const jobId = String(payload?.jobId ?? "").trim();
       if (!/^[A-Za-z0-9._:-]{1,200}$/.test(jobId))
@@ -321,6 +329,7 @@ export default function createZcodeAdapter(context = {}) {
     return result;
   }
 
+  const consoleApi = createZcodeConsole(client);
   return {
     system: SYSTEM,
     baseUrl,
@@ -333,6 +342,13 @@ export default function createZcodeAdapter(context = {}) {
     pollAuth,
     completeAuth,
     call,
+    console: consoleApi,
+    keyManagement: { list: "/keys", items: "keys", prefix: "/keys/" },
+    inference: () => ({ url: baseUrl, routes: ["/v1/chat/completions", "/v1/messages", "/chat/completions", "/messages"] }),
+    async ensureUpstreamCredential() {
+      const created = await consoleApi.createKey({ name: "platform2api 统一入口" });
+      return { secret: created.secret, id: created.item.nativeId, name: created.item.name };
+    },
   };
 }
 

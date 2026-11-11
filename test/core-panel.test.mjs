@@ -15,7 +15,6 @@ const EMAIL = "admin@example.com";
 
 const tempDir = (t) => {
   const dir = mkdtempSync(join(tmpdir(), "platform2api-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 };
 
@@ -37,6 +36,7 @@ const panel = async (t, options = {}) => {
   t.after(async () => {
     instance.server.closeAllConnections?.();
     await new Promise((resolve) => instance.server.close(resolve));
+    rmSync(instance.store.directory, { recursive: true, force: true });
   });
   const base = await listen(instance.server);
   return { ...instance, base };
@@ -233,6 +233,7 @@ test("panel settings expose service urls without leaking tokens", async (t) => {
       { system: "example", baseUrl: "http://example:1234", token: "" },
     ],
     adapters: {},
+    fetchImpl: async () => { throw new Error("fixture upstream unavailable"); },
   });
   const api = client(base);
   await api.login();

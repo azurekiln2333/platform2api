@@ -30,9 +30,13 @@ import {
 } from "./oidc.mjs";
 import { createRegistry } from "./adapters/index.mjs";
 import { AdapterError } from "./adapters/client.mjs";
-import { buildOverview, describeError } from "./overview.mjs";
+import { describeError } from "./overview.mjs";
 import { authAction, listAccounts, saveTags } from "./accounts.mjs";
 import { proxyRequest, proxyTarget, writeProxyResult } from "./proxy.mjs";
+import { createConsole } from "./console.mjs";
+import { method, redact, splitId, filters } from "./console-data.mjs";
+import { GatewayStore } from "./gateway/store.mjs";
+import { createGateway } from "./gateway/index.mjs";
 
 const OIDC_TRANSACTION_MS = 10 * 60 * 1000;
 const ADMIN_KEY_MIN = 12;
@@ -89,7 +93,7 @@ export function createPanelServer(options) {
     throw new Error(`PANEL_ADMIN_KEY must contain at least ${ADMIN_KEY_MIN} characters`);
   validateOrigin(publicUrl);
 
-  const store = new PanelStore(dataDir, { allowLocal });
+  const store = new PanelStore(dataDir, { allowLocal, systems });
   if (ssoBootstrap && typeof ssoBootstrap === "object") store.seedSso(ssoBootstrap);
 
   const isSecure = (req) =>
@@ -113,12 +117,14 @@ export function createPanelServer(options) {
   const ssoCallbackUrl = (req) =>
     store.state.sso.callbackUrl || `${requestOrigin(req)}/api/auth/oidc/callback`;
 
-  const registryPromise = createRegistry({
-    systems,
-    adapters,
-    logger,
-    clientOptions: fetchImpl ? { fetchImpl } : {},
+  const buildRegistry = () => createRegistry({
+    systems: systems.map((config) => ({ ...config, baseUrl: store.state.serviceUrls[config.system] || config.baseUrl })),
+    adapters, logger, clientOptions: fetchImpl ? { fetchImpl } : {},
   });
+  let registryPromise = buildRegistry();
+  const gatewayStore = new GatewayStore(store, systems.map((value) => value.system));
+  const gateway = createGateway({ getRegistry: () => registryPromise, store: gatewayStore, logger, ...options.gateway, ...(options.inferenceFetchImpl ? { fetchImpl: options.inferenceFetchImpl } : {}) });
+  const consoleApi = createConsole({ getRegistry: () => registryPromise, configurations: systems, store, gatewayStore, origin: requestOrigin });
 
   const ssoLogin = async (req, res) => {
     const sso = store.state.sso;
@@ -316,20 +322,57 @@ export function createPanelServer(options) {
       return json(res, 200, store.viewSso(candidate.callbackUrl || ssoCallbackUrl(req)));
     }
 
+    if (path === "/api/channels" && req.method === "GET") return json(res, 200, await consoleApi.channels(req));
+    if (path === "/api/gateway/routing" && req.method === "GET") return json(res, 200, gatewayStore.routing());
+    if (path === "/api/gateway/routing" && req.method === "PATCH") return json(res, 200, gatewayStore.saveRouting(await readJsonBody(req)));
     if (path === "/api/settings" && req.method === "GET")
-      return json(res, 200, panelSettings(store, systems, registry));
+      return json(res, 200, await consoleApi.settings(req));
     if (path === "/api/settings" && req.method === "PATCH") {
       const input = await readJsonBody(req);
-      if (input.serviceUrls !== undefined) store.saveServiceUrls(input.serviceUrls);
-      return json(res, 200, panelSettings(store, systems, registry));
+      if (input.serviceUrls !== undefined) {
+        const before = store.serviceUrls();
+        if (Object.keys(input.serviceUrls || {}).some((system) => !registry.has(system))) throw new InputError("服务连接包含未知渠道");
+        store.saveServiceUrls(input.serviceUrls);
+        registryPromise = buildRegistry();
+        for (const [system, value] of Object.entries(store.serviceUrls())) if (before[system] !== value) { gateway.invalidate(system); consoleApi.invalidate(system); gatewayStore.clearCredential(system); }
+      }
+      return json(res, 200, await consoleApi.settings(req));
     }
 
-    if (path === "/api/overview" && req.method === "GET") return json(res, 200, await buildOverview(registry));
+    const settingsRoute = /^\/api\/settings\/(common|channels\/([a-z][a-z0-9_-]{0,63}))$/.exec(path);
+    if (settingsRoute && req.method === "PATCH") return json(res, 200, await consoleApi.saveSettings(settingsRoute[2] || null, await readJsonBody(req)));
+    const connectionRoute = /^\/api\/channels\/([a-z][a-z0-9_-]{0,63})\/test$/.exec(path);
+    if (connectionRoute && req.method === "POST") return json(res, 200, await route(connectionRoute[1]).health());
+
+    if (path === "/api/keys" && req.method === "GET") return json(res, 200, await consoleApi.keys(filters(url.searchParams)));
+    if (path === "/api/keys" && req.method === "POST") return json(res, 201, await consoleApi.createKey(await readJsonBody(req)));
+    const keyRoute = /^\/api\/keys\/([^/]+)(?:\/actions\/(rotate|reset-usage|reveal))?$/.exec(path);
+    if (keyRoute) {
+      const action = keyRoute[2] ? req.method === "POST" && keyRoute[2] : req.method === "PATCH" ? "update" : req.method === "DELETE" ? "delete" : null;
+      if (!action) throw new InputError("method not allowed", 405);
+      return json(res, 200, await consoleApi.keyOperation(decodeURIComponent(keyRoute[1]), action, await readJsonBody(req, MAX_JSON_BYTES, { optional: req.method !== "PATCH" })));
+    }
+    if (path === "/api/models" && req.method === "GET") return json(res, 200, await consoleApi.models(Object.fromEntries(url.searchParams)));
+    const modelRoute = /^\/api\/models\/([^/]+)\/actions\/([a-z][a-z0-9-]*)$/.exec(path);
+    if (modelRoute && req.method === "POST") {
+      const { system, nativeId } = splitId(decodeURIComponent(modelRoute[1]), registry);
+      const result = await method(route(system), "modelAction")(nativeId, modelRoute[2], await readJsonBody(req));
+      gateway.invalidate(system);
+      return json(res, 200, redact(result));
+    }
+    if (path === "/api/logs" && req.method === "GET") return json(res, 200, await consoleApi.logs(url.searchParams));
+    const logRoute = /^\/api\/logs\/([^/]+)$/.exec(path);
+    if (logRoute && req.method === "GET") return json(res, 200, await consoleApi.logDetail(decodeURIComponent(logRoute[1])));
+    if (path === "/api/usage" && req.method === "GET") return json(res, 200, await consoleApi.usage(url.searchParams));
+
+    if (path === "/api/overview" && req.method === "GET") return json(res, 200, await consoleApi.overview());
 
     if (path === "/api/accounts" && req.method === "GET") {
       const result = await listAccounts(registry, store, {
         system: url.searchParams.get("system") || "",
         tag: url.searchParams.get("tag") || "",
+        status: url.searchParams.get("status") || "",
+        q: url.searchParams.get("q") || "",
       });
       return json(res, 200, result);
     }
@@ -339,23 +382,33 @@ export function createPanelServer(options) {
       const id = decodeURIComponent(tagsRoute[1]);
       if (req.method === "PUT" || req.method === "PATCH") {
         const input = await readJsonBody(req);
-        parseAccountId(id);
+        route(parseAccountId(id).system);
         return json(res, 200, saveTags(store, id, input));
       }
       if (req.method === "GET") {
-        parseAccountId(id);
+        route(parseAccountId(id).system);
         return json(res, 200, { id, tags: store.tags(id) });
       }
       throw new InputError("method not allowed", 405);
     }
 
-    const authRoute = /^\/api\/accounts\/auth\/([a-z]+)\/(start|poll|complete)$/.exec(path);
+    const authRoute = /^\/api\/accounts\/auth\/([a-z][a-z0-9_-]{0,63})\/(start|poll|complete)$/.exec(path);
     if (authRoute) {
       if (req.method !== "POST") throw new InputError("method not allowed", 405);
       const [, system, action] = authRoute;
       route(system);
       const payload = await readJsonBody(req, MAX_JSON_BYTES);
       return json(res, 200, await authAction(registry, system, action, payload));
+    }
+
+    const accountRoute = /^\/api\/accounts\/([^/]+)(?:\/actions\/([a-z][a-z0-9-]*))?$/.exec(path);
+    if (accountRoute) {
+      const { system, nativeId } = parseAccountId(decodeURIComponent(accountRoute[1])), adapter = route(system);
+      const action = accountRoute[2] ? req.method === "POST" && accountRoute[2] : req.method === "PATCH" ? "update" : req.method === "DELETE" ? "delete" : null;
+      if (!action) throw new InputError("method not allowed", 405);
+      if (["reveal", "reveal-token", "reveal-secret"].includes(action)) throw new InputError("完整凭据不可回显", 403);
+      const input = req.method === "DELETE" ? {} : await readJsonBody(req);
+      return json(res, 200, redact(await adapter.accountAction(nativeId, action, input)));
     }
 
     const target = proxyTarget(path);
@@ -368,6 +421,7 @@ export function createPanelServer(options) {
         path: target.path,
         search: url.searchParams,
         maxBytes: MAX_PASSTHROUGH_BYTES,
+        gatewayStore,
       });
       return writeProxyResult(res, result);
     }
@@ -382,6 +436,7 @@ export function createPanelServer(options) {
     try {
       const url = requestUrl(req);
       const path = url.pathname;
+      if (await gateway.matches(path)) return await gateway.handle(req, res, url);
       const session = sessions.get(req);
       assertOrigin(validOrigin, req);
 
@@ -422,7 +477,7 @@ export function createPanelServer(options) {
         return json(res, status, { error: body });
       }
       if (!(error instanceof InputError) && !error?.status)
-        logger.error?.(`[panel] request failed: ${error?.name}: ${error?.message}`);
+        logger.error?.(`[panel] request failed: ${error?.name || "Error"}`);
       const { status, body } = errorResponse(error);
       return json(res, status, { error: body });
     }
@@ -430,32 +485,17 @@ export function createPanelServer(options) {
   server.requestTimeout = 30000;
   server.headersTimeout = 15000;
   server.keepAliveTimeout = 65000;
+  server.on("close", () => { gatewayStore.close(); store.close(); });
 
   return {
     server,
     store,
-    registry: registryPromise,
+    get registry() { return registryPromise; },
+    gatewayStore,
     sessions,
     close: async () => {
       server.closeAllConnections?.();
       await new Promise((resolve) => server.close(resolve));
     },
-  };
-}
-
-// Tokens are never echoed back: the console only needs to know whether one is
-// configured (sh-settings-1).
-function panelSettings(store, systems, registry) {
-  const urls = store.serviceUrls();
-  return {
-    serviceUrls: urls,
-    systems: systems.map((config) => ({
-      system: config.system,
-      // A saved override wins; otherwise the configured (env/Compose) URL is shown.
-      url: store.state.serviceUrls[config.system] || config.baseUrl,
-      tokenConfigured: Boolean(config.token),
-      stub: registry.isStub(config.system),
-    })),
-    ssoCallbackUrl: store.state.sso.callbackUrl || "",
   };
 }

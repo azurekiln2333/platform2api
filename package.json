@@ -5,11 +5,11 @@
   "description": "Unified management panel and Compose deployment for CNB, CodeBuddy and ZCode.",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/server.mjs",
-    "test": "node --test test/core-*.test.mjs"
+    "test": "node --test --test-concurrency=1 test/*.test.mjs"
   },
   "license": "AGPL-3.0-only"
 }

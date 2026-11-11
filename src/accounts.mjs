@@ -2,9 +2,10 @@ import { AdapterError } from "./adapters/index.mjs";
 import { InputError } from "./http.mjs";
 import { compositeId, normalizeTagFilter, parseAccountId } from "./store.mjs";
 import { describeError } from "./overview.mjs";
+import { redact } from "./console-data.mjs";
+import { isAccountNativeId } from "./account-id.mjs";
 
 const MAX_ACCOUNTS_PER_SYSTEM = 5000;
-const NATIVE_ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
 // One unified list, one system tag per account (R11). The system tag is
 // automatic and always first so the console can render the badge without a
@@ -13,7 +14,7 @@ export function normalizeAccount(system, entry, userTags = []) {
   if (!entry || typeof entry !== "object")
     throw new AdapterError(`${system} 适配器返回了无效账号`, { code: "adapter_contract" });
   const nativeId = String(entry.nativeId ?? entry.id ?? "");
-  if (!NATIVE_ID.test(nativeId))
+  if (!isAccountNativeId(nativeId))
     throw new AdapterError(`${system} 适配器返回了无效账号 ID`, { code: "adapter_contract" });
   const id = compositeId(system, nativeId);
   const label =
@@ -30,11 +31,15 @@ export function normalizeAccount(system, entry, userTags = []) {
     tags,
     systemTags: [system],
     userTags: [...userTags],
-    raw: entry.raw ?? null,
+    lastUsedAt: entry.lastUsedAt ?? null,
+    primary: redact(entry.primary ?? entry.detail ?? ""),
+    display: redact(entry.display ?? []),
+    actions: redact(entry.actions ?? []),
+    raw: redact(entry.raw ?? null),
   };
 }
 
-export async function listAccounts(registry, store, { system, tag } = {}) {
+export async function listAccounts(registry, store, { system, tag, status, q } = {}) {
   const systemFilter = typeof system === "string" && system ? system : "";
   if (systemFilter && !registry.has(systemFilter))
     throw new InputError("系统参数不受支持", 400, { param: "system" });
@@ -49,22 +54,27 @@ export async function listAccounts(registry, store, { system, tag } = {}) {
         if (!Array.isArray(entries))
           throw new AdapterError(`${name} 适配器未返回账号数组`, { code: "adapter_contract" });
         const seen = new Set();
+        const channelAccounts = [];
         for (const entry of entries.slice(0, MAX_ACCOUNTS_PER_SYSTEM)) {
           const candidate = normalizeAccount(name, entry, []);
           if (seen.has(candidate.id)) continue;
           seen.add(candidate.id);
-          accounts.push(normalizeAccount(name, entry, store.tags(candidate.id)));
+          channelAccounts.push(normalizeAccount(name, entry, store.tags(candidate.id)));
         }
+        accounts.push(...channelAccounts);
       } catch (error) {
-        if (error instanceof AdapterError || error?.name === "AdapterError")
-          errors.push({ system: name, error: describeError(error) });
-        else throw error;
+        const described = redact(describeError(error));
+        errors.push({ system: name, ...described, error: described });
       }
     }),
   );
   accounts.sort((a, b) => a.system.localeCompare(b.system) || a.label.localeCompare(b.label));
-  const filtered = tagFilter ? accounts.filter((account) => account.tags.includes(tagFilter)) : accounts;
-  return { accounts: filtered, errors, systems: registry.systems() };
+  const states = { ok: ["ok", "healthy", "ready"], error: ["error", "offline", "unhealthy", "expired", "unknown"], cooling: ["cooling", "cooldown"], disabled: ["disabled"] };
+  if (status && status !== "all" && !states[status] && !Object.values(states).flat().includes(status)) throw new InputError("账号状态筛选无效");
+  const filtered = accounts.filter((account) => (!tagFilter || account.tags.includes(tagFilter)) &&
+    (!status || status === "all" || (states[status] ?? [status]).includes(account.enabled === false ? "disabled" : account.status)) &&
+    (!q || `${account.label} ${JSON.stringify(account.primary)} ${account.tags.join(" ")}`.toLowerCase().includes(String(q).toLowerCase())));
+  return { items: filtered, accounts: filtered, errors, systems: registry.systems() };
 }
 
 export function saveTags(store, id, input) {

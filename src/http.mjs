@@ -79,8 +79,9 @@ export function readRawBody(req, maxBytes = MAX_PASSTHROUGH_BYTES) {
   });
 }
 
-export async function readJsonBody(req, maxBytes = MAX_JSON_BYTES) {
+export async function readJsonBody(req, maxBytes = MAX_JSON_BYTES, { optional = false } = {}) {
   const raw = await readRawBody(req, maxBytes);
+  if (!raw.length && optional) return {};
   if (!raw.length) throw new InputError("请求体须为有效的 JSON");
   let value;
   try {

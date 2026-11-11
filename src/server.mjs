@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { createPanelServer } from "./app.mjs";
+import { CHANNELS } from "./channels.mjs";
 
 const flag = (name, value) => {
   if (value === undefined || value === "") return undefined;
@@ -27,23 +28,7 @@ const firstSet = (...values) => {
 
 // Compose service names are reachable by DNS; the host-published ports stay
 // available for direct model calls.
-const SERVICES = [
-  { system: "cnb", urlEnv: "CNB_URL", keyEnv: "CNB_ADMIN_KEY", legacyEnv: "CNB_PLATFORM_TOKEN", fallback: "http://127.0.0.1:9002" },
-  {
-    system: "codebuddy",
-    urlEnv: "CODEBUDDY_URL",
-    keyEnv: "CODEBUDDY_ADMIN_KEY",
-    legacyEnv: "CODEBUDDY_PLATFORM_TOKEN",
-    fallback: "http://127.0.0.1:8787",
-  },
-  {
-    system: "zcode",
-    urlEnv: "ZCODE_URL",
-    keyEnv: "ZCODE_ADMIN_KEY",
-    legacyEnv: "ZCODE_PLATFORM_TOKEN",
-    fallback: "http://127.0.0.1:12283",
-  },
-];
+const SERVICES = CHANNELS.map((channel) => ({ ...channel, urlEnv: `${channel.envPrefix}_URL`, keyEnv: `${channel.envPrefix}_ADMIN_KEY`, legacyEnv: `${channel.envPrefix}_PLATFORM_TOKEN`, fallback: channel.defaultUrl }));
 
 // One key opens all four consoles, so a service credential defaults to the
 // panel's own key. A deployment with distinct keys overrides one service at a
@@ -51,15 +36,17 @@ const SERVICES = [
 // key is always set, and a service image that predates the shared key accepts
 // only that token.
 function servicesFromEnv(env, panelKey) {
-  return SERVICES.map(({ system, urlEnv, keyEnv, legacyEnv, fallback }) => ({
+  return SERVICES.map(({ system, label, color, adapterUrl, envPrefix, urlEnv, keyEnv, legacyEnv, fallback }) => ({
     system,
+    label, color, adapterUrl,
+    publicUrl: origin(env[`${envPrefix}_PUBLIC_URL`]),
     baseUrl: origin(env[urlEnv]) || fallback,
     token: firstSet(env[keyEnv], env[legacyEnv], panelKey) || "",
   }));
 }
 
 // Environment variables seed an unconfigured panel only. Once SSO settings are
-// saved in panel.json, the saved configuration wins.
+// saved in SQLite, the saved configuration wins.
 function ssoBootstrapFromEnv(env) {
   const bootstrap = {
     enabled: flag("PLATFORM_SSO_ENABLED", env.PLATFORM_SSO_ENABLED),

@@ -2,10 +2,11 @@
 // `<system>.mjs`, or the stub fallback. See ./README.md for the contract.
 import { AdapterError, createServiceClient } from "./client.mjs";
 import { createStubAdapter } from "./_stub.mjs";
+import { CHANNELS } from "../channels.mjs";
 
 export { AdapterError, createServiceClient };
 export const ADAPTER_METHODS = Object.freeze(["health", "overview", "listAccounts", "accountAction", "call"]);
-export const OPTIONAL_ADAPTER_METHODS = Object.freeze(["startAuth", "pollAuth", "completeAuth"]);
+export const OPTIONAL_ADAPTER_METHODS = Object.freeze(["startAuth", "pollAuth", "completeAuth", "capabilities", "listKeys", "createKey", "updateKey", "deleteKey", "keyAction", "listModels", "modelAction", "listLogs", "getLog", "usage", "settings", "saveSettings", "inference", "ensureUpstreamCredential"]);
 
 const REQUIRED = ADAPTER_METHODS;
 
@@ -27,8 +28,8 @@ export async function instantiate(mod, context) {
 
 const iife = (value) => value;
 
-const loadModule = async (system) => {
-  const specifier = new URL(`./${system}.mjs`, import.meta.url);
+const loadModule = async (system, adapterUrl) => {
+  const specifier = adapterUrl ? new URL(adapterUrl) : new URL(`./${system}.mjs`, import.meta.url);
   try {
     return await import(specifier.href);
   } catch (error) {
@@ -41,11 +42,12 @@ export async function createRegistry({ systems = [], adapters = {}, logger = con
   const entries = new Map();
   for (const config of systems) {
     const { system } = config;
-    if (!system) throw new Error("adapter registry: system name is required");
+    if (typeof system !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(system) || system === "unified" || entries.has(system))
+      throw new Error("adapter registry: channel identifier is invalid, reserved or duplicated");
     if (adapters[system]) {
       const candidate =
         typeof adapters[system] === "function" ? await adapters[system](config) : adapters[system];
-      entries.set(system, normalizeAdapter(candidate, { system }));
+      entries.set(system, { baseUrl: config.baseUrl, ...normalizeAdapter(candidate, { system }) });
       continue;
     }
     const client = createServiceClient({
@@ -63,7 +65,7 @@ export async function createRegistry({ systems = [], adapters = {}, logger = con
       client,
       logger,
     };
-    const mod = await loadModule(system);
+    const mod = await loadModule(system, config.adapterUrl ?? CHANNELS.find((entry) => entry.system === system)?.adapterUrl);
     if (!mod) {
       entries.set(system, createStubAdapter(context));
       continue;
@@ -71,7 +73,7 @@ export async function createRegistry({ systems = [], adapters = {}, logger = con
     try {
       entries.set(system, normalizeAdapter(await instantiate(mod, context), { system }));
     } catch (error) {
-      logger.error?.(`[adapters] ${system}: ${error.message}`);
+      logger.error?.(`[adapters] ${system}: adapter initialization failed`);
       entries.set(system, createStubAdapter(context));
     }
   }

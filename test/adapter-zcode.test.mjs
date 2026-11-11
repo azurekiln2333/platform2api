@@ -8,6 +8,23 @@ import { createRegistry } from "../src/adapters/index.mjs";
 
 const TOKEN = "zcode-platform-token";
 
+test("ZCode preserves native email and Unicode labels and encodes exactly one path segment", async () => {
+  const seen = [];
+  const adapter = createZcodeAdapter({ baseUrl: "http://127.0.0.1:1", client: { request: async (path, options) => {
+    seen.push({ path, options }); return { ok: true, status: 200, body: { ok: true } };
+  } } });
+  for (const label of ["account+ops@example.test", "中文 账号@示例.test", " keep@exact.test "]) {
+    assert.equal(toEntry({ label }).nativeId, label);
+    await adapter.accountAction(label, "update", { enabled: false });
+    assert.equal(seen.at(-1).path, `/api/accounts/${encodeURIComponent(label)}`);
+  }
+  const calls = seen.length;
+  for (const label of ["a/b", "a\\b", "..", "%2F", "a?b", "a#b", "a\u0000b", "a\u0085b", "a\uD800b"]) {
+    await assert.rejects(() => adapter.accountAction(label, "refresh"), (error) => error.status === 400);
+  }
+  assert.equal(seen.length, calls);
+});
+
 const listen = async (server) => {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -254,7 +271,7 @@ test("zcode adapter fails loudly on a rejected token and on invalid input", asyn
     return true;
   });
   const adapter = adapterFor(baseUrl);
-  await assert.rejects(() => adapter.accountAction("bad label", "refresh"), (error) => error.status === 400);
+  await assert.rejects(() => adapter.accountAction("bad/label", "refresh"), (error) => error.status === 400);
   await assert.rejects(() => adapter.accountAction("zc-acc-1", "selftest-result", {}), (error) => error.status === 400);
   await assert.rejects(() => adapter.pollAuth("bad flow"), (error) => error.status === 400);
   assert.throws(() => createZcodeAdapter({ system: "zcode", baseUrl, token: TOKEN }), /shared service client/);
