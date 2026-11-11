@@ -1,3 +1,18 @@
+import type {
+  Account,
+  Aggregate,
+  Channel,
+  ChannelsResponse,
+  ConsoleOverview,
+  ConsoleSettings,
+  KeyItem,
+  LogDetail,
+  LogsResponse,
+  ModelItem,
+  Routing,
+  UsageResponse,
+} from './console-types.ts'
+
 export interface ApiDiagnostics {
   message?: string
   method: string
@@ -108,11 +123,11 @@ function diagnose(
     source = 'cloudflare'
     hint =
       response.status >= 500
-        ? 'Cloudflare 错误响应，请检查 Cloudflare → 源站链路、Nginx 和面板日志；此响应无法确认 CNB 请求结果。'
+        ? 'Cloudflare 错误响应，请检查 Cloudflare → 源站链路、Nginx 和面板日志；此响应无法确认请求结果。'
         : 'Cloudflare 错误响应，请检查边缘访问规则、Cloudflare 事件和源站日志。'
   } else if (nginx) {
     source = 'nginx'
-    hint = 'Nginx 返回 HTML 错误页，请检查反向代理到面板服务的连接；此页无法确认 CNB 请求结果。'
+    hint = 'Nginx 返回 HTML 错误页，请检查反向代理到面板服务的连接；此页无法确认请求结果。'
   } else if (source === 'json-api') {
     hint = '管理接口返回 JSON 错误，请结合面板日志确认具体原因。'
   } else if (viaCloudflare) {
@@ -233,21 +248,13 @@ export async function api<T>(path: string, method = 'GET', data?: unknown): Prom
         ? `${original}${diagnostics.source === 'cloudflare' ? ' · Cloudflare 错误响应' : ''}`
         : source
       diagnostics.message = message
-      throw new ApiError(
-        `${message}（${requestLabel} · HTTP ${response.status}）${diagnostics.rayId ? ` · Ray ID ${diagnostics.rayId}` : ''}`,
-        response.status,
-        diagnostics,
-      )
+      throw new ApiError(`${message}（HTTP ${response.status}）`, response.status, diagnostics)
     }
     if (body.truncated || result === undefined || result === null) {
       diagnostics.message = body.truncated
         ? '管理接口响应超出读取上限'
         : '管理服务返回了无效的 JSON 数据'
-      throw new ApiError(
-        `${diagnostics.message}（${requestLabel} · HTTP ${response.status}）`,
-        502,
-        diagnostics,
-      )
+      throw new ApiError(`${diagnostics.message}（HTTP ${response.status}）`, 502, diagnostics)
     }
     return result as T
   } catch (error) {
@@ -255,12 +262,95 @@ export async function api<T>(path: string, method = 'GET', data?: unknown): Prom
       diagnostics.message = '请求超时，请检查网络连接后重试'
       diagnostics.hint =
         '读取管理接口超时，请检查网络、反向代理和面板日志；超时不能确认操作是否已经执行。'
-      throw new ApiError(`${diagnostics.message}（${requestLabel}）`, 408, diagnostics)
+      throw new ApiError(diagnostics.message, 408, diagnostics)
     }
     if (error instanceof ApiError) throw error
     diagnostics.message = '无法连接管理服务，请检查网络连接'
-    throw new ApiError(`${diagnostics.message}（${requestLabel}）`, 0, diagnostics)
+    throw new ApiError(diagnostics.message, 0, diagnostics)
   } finally {
     window.clearTimeout(timeout)
   }
+}
+
+type Query = Record<string, string | number | undefined>
+function withQuery(path: string, values: Query = {}) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(values))
+    if (value !== undefined && value !== '' && value !== 'all') query.set(key, String(value))
+  return `${path}${query.size ? `?${query}` : ''}`
+}
+const idPath = (kind: string, id: string) => `/${kind}/${encodeURIComponent(id)}`
+/** All merged views use this management contract; channel-specific editors use /p. */
+export const consoleApi = {
+  async channels(): Promise<ChannelsResponse> {
+    const payload = await api<
+      ChannelsResponse | Channel[] | { items: Channel[]; unifiedUrl?: string }
+    >('/channels')
+    // Before the unified gateway was introduced this endpoint returned an array.
+    const raw = Array.isArray(payload)
+      ? payload
+      : 'channels' in payload
+        ? payload.channels
+        : payload.items
+    return {
+      unifiedUrl: Array.isArray(payload)
+        ? payload.find((item) => item.unifiedUrl)?.unifiedUrl || ''
+        : payload.unifiedUrl || '',
+      channels: (raw || []).map((item) => ({
+        ...item,
+        color: item.color || '#607d8b',
+        inferenceUrl: item.inference?.url || item.inferenceUrl || '',
+        capabilities: {
+          accounts: Object.assign({ add: [], batch: [] }, item.capabilities?.accounts),
+          keys: Object.assign(
+            {
+              create: false,
+              update: false,
+              delete: false,
+              reveal: false,
+              rotate: false,
+              resetUsage: false,
+              fields: [],
+            },
+            item.capabilities?.keys,
+          ),
+          models: Object.assign({ toggle: false }, item.capabilities?.models),
+          logs: Object.assign({ kinds: [], filters: [] }, item.capabilities?.logs),
+          usage: Object.assign({ extras: [] }, item.capabilities?.usage),
+        },
+      })),
+    }
+  },
+  overview: () => api<ConsoleOverview>('/overview'),
+  accounts: (query?: Query) => api<Aggregate<Account>>(withQuery('/accounts', query)),
+  updateAccount: (id: string, values: unknown) => api(idPath('accounts', id), 'PATCH', values),
+  deleteAccount: (id: string) => api(idPath('accounts', id), 'DELETE'),
+  accountAction: (id: string, action: string, values: unknown = {}) =>
+    api(`${idPath('accounts', id)}/actions/${encodeURIComponent(action)}`, 'POST', values),
+  saveAccountTags: (id: string, tags: string[]) =>
+    api(`${idPath('accounts', id)}/tags`, 'PUT', { tags }),
+  keys: (query?: Query) => api<Aggregate<KeyItem>>(withQuery('/keys', query)),
+  createKey: (values: unknown) => api<{ item: KeyItem; secret: string }>('/keys', 'POST', values),
+  updateKey: (id: string, values: unknown) => api(idPath('keys', id), 'PATCH', values),
+  deleteKey: (id: string, values?: unknown) => api(idPath('keys', id), 'DELETE', values),
+  keyAction: (id: string, action: string, values: unknown = {}) =>
+    api<{ item?: KeyItem; secret?: string }>(
+      `${idPath('keys', id)}/actions/${encodeURIComponent(action)}`,
+      'POST',
+      values,
+    ),
+  routing: () => api<Routing>('/gateway/routing'),
+  saveRouting: (values: Routing) => api<Routing>('/gateway/routing', 'PATCH', values),
+  models: (query?: Query) => api<Aggregate<ModelItem>>(withQuery('/models', query)),
+  modelAction: (id: string, action: string, values: unknown = {}) =>
+    api(`${idPath('models', id)}/actions/${encodeURIComponent(action)}`, 'POST', values),
+  logs: (query?: Query) => api<LogsResponse>(withQuery('/logs', query)),
+  log: (id: string) => api<LogDetail>(idPath('logs', id)),
+  usage: (query?: Query) => api<UsageResponse>(withQuery('/usage', query)),
+  settings: () => api<ConsoleSettings>('/settings'),
+  saveServices: (serviceUrls: Record<string, string>) => api('/settings', 'PATCH', { serviceUrls }),
+  saveCommon: (group: string, values: Record<string, unknown>) =>
+    api('/settings/common', 'PATCH', { group, values }),
+  saveChannelSettings: (system: string, group: string, values: Record<string, unknown>) =>
+    api(`/settings/channels/${encodeURIComponent(system)}`, 'PATCH', { group, values }),
 }

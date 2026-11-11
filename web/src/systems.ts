@@ -20,13 +20,21 @@ export interface SystemMeta {
   service: string
 }
 
-export const SYSTEMS: readonly SystemMeta[] = [
-  { id: 'cnb', label: 'CNB', badge: 'CNB', service: 'cnb2api' },
-  { id: 'codebuddy', label: 'CodeBuddy', badge: 'CB', service: 'codebuddy2api' },
-  { id: 'zcode', label: 'ZCode', badge: 'ZC', service: 'zcode2api' },
-]
-
-export const SYSTEM_IDS: readonly SystemId[] = SYSTEMS.map((system) => system.id)
+export const SYSTEMS: SystemMeta[] = []
+export const SYSTEM_IDS: SystemId[] = []
+export function registerSystems(channels: { system: string; label: string }[]) {
+  SYSTEMS.splice(
+    0,
+    SYSTEMS.length,
+    ...channels.map((item) => ({
+      id: item.system,
+      label: item.label,
+      badge: item.label,
+      service: item.label,
+    })),
+  )
+  SYSTEM_IDS.splice(0, SYSTEM_IDS.length, ...channels.map((item) => item.system))
+}
 
 export function systemMeta(id: SystemId): SystemMeta {
   return (
@@ -191,15 +199,9 @@ export interface AccountFilter {
   query?: string
 }
 
-const SYSTEM_TAG_LABEL: Record<SystemId, string> = {
-  cnb: 'cnb',
-  codebuddy: 'codebuddy',
-  zcode: 'zcode',
-}
-
-/** The system tag is automatic and always present on an account. */
+/** Channel IDs are the immutable automatic tags. */
 export function systemTag(system: SystemId): string {
-  return SYSTEM_TAG_LABEL[system]
+  return system
 }
 
 export function allTags(accounts: PanelAccount[]): string[] {
@@ -228,7 +230,7 @@ export function filterAccounts(accounts: PanelAccount[], filter: AccountFilter):
 
 /** Counts per system for the sidebar badge and the filter chips. */
 export function countBySystem(accounts: PanelAccount[]): Record<SystemId, number> {
-  const counts: Record<SystemId, number> = { cnb: 0, codebuddy: 0, zcode: 0 }
+  const counts: Record<SystemId, number> = Object.fromEntries(SYSTEM_IDS.map((id) => [id, 0]))
   for (const account of accounts) if (isSystemId(account.system)) counts[account.system]++
   return counts
 }

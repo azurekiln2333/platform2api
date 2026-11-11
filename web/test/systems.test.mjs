@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   MAX_TAGS,
+  registerSystems,
   allTags,
   countBySystem,
   filterAccounts,
@@ -17,6 +18,12 @@ import {
   systemCard,
   systemTag,
 } from '../src/systems.ts'
+
+registerSystems([
+  { system: 'cnb', label: 'CNB' },
+  { system: 'codebuddy', label: 'CodeBuddy' },
+  { system: 'zcode', label: 'ZCode' },
+])
 
 const overviewPayload = {
   cnb: {
@@ -105,6 +112,7 @@ test('system tag is automatic and cannot be duplicated by a user tag', () => {
   assert.equal(
     normalizeTags(Array.from({ length: 30 }, (_, index) => `t${index}`)).length,
     MAX_TAGS,
+    registerSystems,
   )
 })
 

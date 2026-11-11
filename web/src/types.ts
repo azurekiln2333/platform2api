@@ -1,5 +1,5 @@
 /** One managed upstream system. System tags are automatic, never user-edited. */
-export type SystemId = 'cnb' | 'codebuddy' | 'zcode'
+export type SystemId = string
 
 export type SystemHealth = 'ok' | 'degraded' | 'offline' | 'unknown'
 

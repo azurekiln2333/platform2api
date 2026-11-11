@@ -87,8 +87,10 @@ export async function copy(text: string) {
       if (!copied) throw new Error('clipboard unavailable')
     }
     notify('已复制到剪贴板')
+    return true
   } catch {
     notify('复制失败，请手动选择内容复制', true)
+    return false
   }
 }
 
