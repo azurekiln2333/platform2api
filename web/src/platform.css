@@ -593,20 +593,50 @@
   gap: 6px;
   font-size: 12px;
 }
-.quota-inline progress {
+/* "remaining / total": the meter is never wider than the value it belongs to. */
+.quota-remaining {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.quota-meter {
   width: 100%;
   max-width: 260px;
   height: 6px;
-  border: 0;
-  accent-color: var(--primary);
-}
-.quota-inline progress::-webkit-progress-bar {
+  border-radius: 6px;
   background: var(--line);
-  border-radius: 6px;
+  overflow: hidden;
 }
-.quota-inline progress::-webkit-progress-value {
-  background: var(--primary);
+.quota-meter > i {
+  display: block;
+  height: 100%;
   border-radius: 6px;
+  background: var(--primary);
+}
+.quota-inline.quota-warn .quota-remaining {
+  color: var(--amber);
+}
+.quota-inline.quota-warn .quota-meter > i {
+  background: var(--amber);
+}
+.quota-inline.quota-low .quota-remaining {
+  color: var(--red);
+}
+.quota-inline.quota-low .quota-meter > i {
+  background: var(--red);
+}
+/* F9: long ids stay on one line, the full value stays in `title`. */
+.cell-clip {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+@media (max-width: 900px) {
+  .cell-clip {
+    max-width: 150px;
+  }
 }
 .empty-state,
 .loading-state {

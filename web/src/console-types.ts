@@ -2,13 +2,17 @@ export interface Descriptor {
   key: string
   label: string
   value: unknown
-  kind: 'text' | 'mono' | 'time' | 'badge' | 'quota' | 'bool'
+  kind: 'text' | 'mono' | 'time' | 'badge' | 'quota' | 'bool' | 'link'
+  /** Only for `kind: "link"`; opened in a new tab. */
+  href?: string
 }
 export interface Action {
   id: string
   label: string
   danger?: boolean
   confirm?: string | boolean
+  /** `true` renders the action as a card shortcut instead of the ⋯ menu. */
+  quick?: boolean
 }
 export interface Field {
   key: string
@@ -31,7 +35,12 @@ export interface Channel {
   unifiedUrl?: string
   inference?: { url: string; routes: string[] }
   capabilities: {
-    accounts: { add: string[]; batch: string[] }
+    accounts: {
+      add: string[]
+      batch: string[]
+      /** Channel-level operations declared by the server (e.g. wake every workspace). */
+      channelActions?: ChannelAction[]
+    }
     keys: {
       create: boolean
       update: boolean
@@ -49,6 +58,21 @@ export interface Channel {
 export interface ChannelsResponse {
   channels: Channel[]
   unifiedUrl: string
+}
+/** A channel-level operation, declared by the server — never hard-coded per channel. */
+export interface ChannelAction {
+  id: string
+  label: string
+}
+export interface ChannelActionFailure {
+  id: string
+  label: string
+  message: string
+}
+export interface ChannelActionResponse {
+  total: number
+  started: number
+  failed: ChannelActionFailure[]
 }
 export interface AggregateError {
   system: string

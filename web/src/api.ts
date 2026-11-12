@@ -2,6 +2,8 @@ import type {
   Account,
   Aggregate,
   Channel,
+  ChannelAction,
+  ChannelActionResponse,
   ChannelsResponse,
   ConsoleOverview,
   ConsoleSettings,
@@ -280,6 +282,48 @@ function withQuery(path: string, values: Query = {}) {
   return `${path}${query.size ? `?${query}` : ''}`
 }
 const idPath = (kind: string, id: string) => `/${kind}/${encodeURIComponent(id)}`
+/** Channel-level actions are optional; a server without them simply declares none. */
+function normalizeChannelActions(value: unknown): ChannelAction[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return []
+    const item = entry as { id?: unknown; label?: unknown }
+    if (typeof item.id !== 'string' || !item.id) return []
+    return [
+      { id: item.id, label: typeof item.label === 'string' && item.label ? item.label : item.id },
+    ]
+  })
+}
+/** `failed` is normalized too: the front end only ever renders `{id,label,message}`. */
+function normalizeChannelAction(response: unknown): ChannelActionResponse {
+  const body = (response ?? {}) as Record<string, unknown>
+  const failed = Array.isArray(body.failed)
+    ? body.failed.flatMap((entry) => {
+        if (!entry || typeof entry !== 'object') return []
+        const item = entry as Record<string, unknown>
+        const message =
+          typeof item.message === 'string'
+            ? item.message
+            : typeof (item.error as { message?: unknown } | null)?.message === 'string'
+              ? String((item.error as { message: string }).message)
+              : '操作失败'
+        return [
+          {
+            id: typeof item.id === 'string' ? item.id : '',
+            label: typeof item.label === 'string' && item.label ? item.label : '未命名账号',
+            message,
+          },
+        ]
+      })
+    : []
+  const total = Number.isFinite(body.total as number) ? Number(body.total) : null
+  const started = Number.isFinite(body.started as number) ? Number(body.started) : null
+  return {
+    total: total ?? (started ?? 0) + failed.length,
+    started: started ?? 0,
+    failed,
+  }
+}
 /** All merged views use this management contract; channel-specific editors use /p. */
 export const consoleApi = {
   async channels(): Promise<ChannelsResponse> {
@@ -301,7 +345,9 @@ export const consoleApi = {
         color: item.color || '#607d8b',
         inferenceUrl: item.inference?.url || item.inferenceUrl || '',
         capabilities: {
-          accounts: Object.assign({ add: [], batch: [] }, item.capabilities?.accounts),
+          accounts: Object.assign({ add: [], batch: [] }, item.capabilities?.accounts, {
+            channelActions: normalizeChannelActions(item.capabilities?.accounts?.channelActions),
+          }),
           keys: Object.assign(
             {
               create: false,
@@ -329,6 +375,15 @@ export const consoleApi = {
     api(`${idPath('accounts', id)}/actions/${encodeURIComponent(action)}`, 'POST', values),
   saveAccountTags: (id: string, tags: string[]) =>
     api(`${idPath('accounts', id)}/tags`, 'PUT', { tags }),
+  /** Channel-level operation (e.g. wake every workspace). Never destructive-by-default. */
+  channelAction: async (system: string, action: string): Promise<ChannelActionResponse> =>
+    normalizeChannelAction(
+      await api<unknown>(
+        `/channels/${encodeURIComponent(system)}/actions/${encodeURIComponent(action)}`,
+        'POST',
+        {},
+      ),
+    ),
   keys: (query?: Query) => api<Aggregate<KeyItem>>(withQuery('/keys', query)),
   createKey: (values: unknown) => api<{ item: KeyItem; secret: string }>('/keys', 'POST', values),
   updateKey: (id: string, values: unknown) => api(idPath('keys', id), 'PATCH', values),

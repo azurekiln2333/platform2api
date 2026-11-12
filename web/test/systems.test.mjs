@@ -13,8 +13,11 @@ import {
   overviewCards,
   parseAccountId,
   quotaPercent,
+  quotaProgress,
   serviceHealth,
   serviceInfo,
+  statusLabel,
+  statusTone,
   systemCard,
   systemTag,
 } from '../src/systems.ts'
@@ -228,4 +231,45 @@ test('quota percent prefers an explicit value and stays inside 0-100', () => {
   assert.equal(quotaPercent({ percent: 140 }), 100)
   assert.equal(quotaPercent({ percent: -3 }), 0)
   assert.equal(quotaPercent(null), null)
+})
+
+// F4: the console shows "remaining / total" and the bar length is that share.
+test('quota progress shows the remaining share of the total', () => {
+  assert.deepEqual(quotaProgress({ total: 1000, used: 680, remaining: 320 }), {
+    remaining: 320,
+    total: 1000,
+    percent: 32,
+    tone: 'ok',
+  })
+  // A server that only sends used/total still gets a remaining value.
+  assert.deepEqual(quotaProgress({ total: 1000, used: 980 }), {
+    remaining: 20,
+    total: 1000,
+    percent: 2,
+    tone: 'low',
+  })
+  assert.equal(quotaProgress({ total: 100, used: 85 }).tone, 'warn')
+  assert.equal(quotaProgress({ remaining: 0, total: 100 }).tone, 'low')
+  // No total means no bar: the caller must fall back to text only.
+  assert.deepEqual(quotaProgress({ remaining: 320 }), {
+    remaining: 320,
+    total: null,
+    percent: null,
+    tone: 'ok',
+  })
+  assert.equal(quotaProgress({ percent: 90, total: 100 }).remaining, 10)
+  assert.equal(quotaProgress({ total: 100, remaining: 500 }).percent, 100)
+  assert.equal(quotaProgress({ total: 100, used: 500 }).remaining, 0)
+  assert.equal(quotaProgress(null).percent, null)
+})
+
+// F8: only "normal" is green; a cooling account warns instead.
+test('cooling reads as a warning tone, not a healthy one', () => {
+  assert.equal(statusLabel('cooling'), '冷却中')
+  assert.equal(statusTone('cooling'), 'amber')
+  assert.equal(statusTone('quota'), 'amber')
+  assert.equal(statusTone('healthy'), 'green')
+  assert.equal(statusTone('ready'), 'green')
+  assert.equal(statusTone('offline'), 'gray')
+  assert.equal(statusTone('unknown'), 'slate')
 })

@@ -10,6 +10,9 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:19300',
     browserName: 'chromium',
     viewport: { width: 1440, height: 1000 },
+    // F10 copies values from the clipboard API; grant it instead of relying on
+    // the browser default so the「已复制」feedback is deterministic.
+    permissions: ['clipboard-read', 'clipboard-write'],
     trace: 'retain-on-failure',
   },
   outputDir: 'test-results/browser',

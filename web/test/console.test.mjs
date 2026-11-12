@@ -30,6 +30,15 @@ test('exactly six pages and every old page redirects with a channel filter', () 
   assert.equal(parseRoute('#no-such-page').hash, '#overview')
   assert.equal(parseRoute('#codebuddy/usage').query.tab, 'usage')
 })
+// F5: every sidebar entry and page title is exactly four characters.
+test('every navigation label is four characters and unique', () => {
+  assert.deepEqual(
+    SHELL_NAV.map((item) => item.label),
+    ['运行概览', '账号管理', '密钥管理', '模型列表', '请求日志', '系统设置'],
+  )
+  for (const item of SHELL_NAV) assert.equal([...item.label].length, 4, item.label)
+  assert.equal(new Set(SHELL_NAV.map((item) => item.label)).size, SHELL_NAV.length)
+})
 test('hash filters round-trip without losing unicode or colons', () => {
   const hash = routeHash('logs', {
     system: 'fourth',

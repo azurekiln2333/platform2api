@@ -37,7 +37,7 @@ onMounted(() => void load())
 <template>
   <section>
     <header class="page-heading">
-      <h1>设置</h1>
+      <h1>系统设置</h1>
       <button class="button" :disabled="loading" @click="load">
         {{ loading ? '刷新中…' : '刷新' }}
       </button>

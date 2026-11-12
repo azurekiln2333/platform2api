@@ -18,6 +18,7 @@ import SystemBadge from '../components/SystemBadge.vue'
 import PartialErrors from '../components/PartialErrors.vue'
 import RelativeTime from '../components/RelativeTime.vue'
 import CopyButton from '../components/CopyButton.vue'
+import CopyableValue from '../components/accounts/CopyableValue.vue'
 import ModalShell from '../components/ModalShell.vue'
 import SchemaFields from '../components/SchemaFields.vue'
 import ConfirmAction from '../components/ConfirmAction.vue'
@@ -371,7 +372,7 @@ onBeforeUnmount(() => {
 <template>
   <section>
     <header class="page-heading">
-      <h1>密钥</h1>
+      <h1>密钥管理</h1>
       <div class="heading-actions">
         <button class="button" :disabled="loading" @click="load">
           {{ loading ? '刷新中…' : '刷新' }}</button
@@ -456,7 +457,13 @@ onBeforeUnmount(() => {
         </thead>
         <tbody>
           <tr v-for="item in visible" :key="item.id">
-            <td>{{ item.name }} <small v-if="item.builtin" class="status-pill">内置</small></td>
+            <td>
+              <CopyableValue class="cell-clip" :value="item.name" :label="item.name" /><small
+                v-if="item.builtin"
+                class="status-pill"
+                >内置</small
+              >
+            </td>
             <td>
               {{ item.via === 'unified' ? '统一地址' : `${channelLabel(item.system || '')} 直连` }}
             </td>
@@ -467,7 +474,13 @@ onBeforeUnmount(() => {
               /></template>
             </td>
             <td>
-              <code>{{ item.masked }}</code>
+              <CopyableValue
+                v-if="item.masked"
+                class="cell-clip"
+                :value="item.masked"
+                :label="`密钥 ${item.name}`"
+                mono
+              /><span v-else>—</span>
             </td>
             <td>
               <button

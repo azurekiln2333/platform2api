@@ -7,7 +7,7 @@ import { notify } from '../panel.ts'
 import ChannelFilter from '../components/ChannelFilter.vue'
 import PartialErrors from '../components/PartialErrors.vue'
 import SystemBadge from '../components/SystemBadge.vue'
-import CopyButton from '../components/CopyButton.vue'
+import CopyableValue from '../components/accounts/CopyableValue.vue'
 import DescriptorList from '../components/DescriptorList.vue'
 import ConfirmAction from '../components/ConfirmAction.vue'
 import { modelExtensions } from '../components/models/extensions.ts'
@@ -115,7 +115,7 @@ onBeforeUnmount(() => {
 <template>
   <section>
     <header class="page-heading">
-      <h1>模型</h1>
+      <h1>模型列表</h1>
       <button class="button" :disabled="loading" @click="load">
         {{ loading ? '刷新中…' : '刷新' }}
       </button>
@@ -159,8 +159,13 @@ onBeforeUnmount(() => {
         <tbody>
           <tr v-for="row in rows" :key="row.id">
             <td>
-              <code>{{ row.model }}</code>
-              <CopyButton :value="row.model" :label="`复制模型 ${row.model}`" />
+              <CopyableValue
+                class="cell-clip"
+                :value="row.model"
+                :label="`模型 ${row.model}`"
+                :title="row.model"
+                mono
+              />
             </td>
             <td>
               <SystemBadge v-for="item in row.entries" :key="item.id" :system="item.system" />
@@ -194,6 +199,8 @@ onBeforeUnmount(() => {
               <div v-for="item in row.entries" :key="item.id">
                 <SystemBadge v-if="row.entries.length > 1" :system="item.system" /><DescriptorList
                   :items="item.display"
+                  one-line
+                  click-copy
                 />
               </div>
             </td>

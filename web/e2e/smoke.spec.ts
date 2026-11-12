@@ -13,6 +13,19 @@ test('six flat pages, fourth channel and partial failures', async ({ page }) => 
   page.on('pageerror', (e) => errors.push(e.message))
   await signIn(page)
   await expect(page.getByRole('navigation', { name: '主导航' }).locator('a')).toHaveCount(6)
+  // F5: every sidebar entry is four characters, and the page title follows it.
+  await expect(page.getByRole('navigation', { name: '主导航' }).locator('a')).toHaveText([
+    '运行概览',
+    '账号管理',
+    '密钥管理',
+    '模型列表',
+    '请求日志',
+    '系统设置',
+  ])
+  await expect(page.locator('main h1')).toHaveText('运行概览')
+  // F13: the old auto-refresh switch is a frequency control that defaults to 5s.
+  await expect(page.getByLabel('刷新频率')).toHaveValue('5')
+  await expect(page.getByTestId('refresh-status')).toBeVisible()
   await expect(page.getByTestId('overview-card-fourth')).toBeVisible()
   await expect(page.getByTestId('overview-card-zcode')).toContainText('暂不可达')
   await expect(page.getByTestId('overview-card-cnb')).toContainText('credits')
@@ -60,6 +73,16 @@ test('accounts card/list persists and tags use PUT', async ({ page }) => {
   await expect(page.getByTestId('account-fourth:account-2')).toBeVisible()
   await page.getByRole('button', { name: '列表视图', exact: true }).click()
   await expect(page.getByTestId('accounts-table')).toBeVisible()
+  // F7: the checkbox column is fixed and the channel column never overlaps it.
+  const selectCell = page.locator('tbody .select-cell').first()
+  const channelCell = page.locator('tbody .channel-cell').first()
+  await expect(channelCell).toHaveCSS('width', '108px')
+  const selectBox = await selectCell.boundingBox()
+  const channelBox = await channelCell.boundingBox()
+  expect(selectBox!.x + selectBox!.width).toBeLessThanOrEqual(channelBox!.x + 1)
+  const badgeBox = await channelCell.locator('.system-badge').first().boundingBox()
+  expect(badgeBox!.x).toBeGreaterThanOrEqual(channelBox!.x)
+  expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(channelBox!.x + channelBox!.width + 1)
   await page.reload()
   await expect(page.getByTestId('accounts-table')).toBeVisible()
   const row = page.getByTestId('account-fourth:account-2')
@@ -261,6 +284,8 @@ test('native model editor preserves rules, encodes slash IDs and confirms disabl
 test('logs use stable server cursor, via filter and redacted detail', async ({ page }) => {
   await signIn(page)
   await page.getByTestId('nav-logs').click()
+  // Pin the refresh rate so a background tick cannot reset the paged list.
+  await page.getByLabel('刷新频率').selectOption('0')
   await expect(page.locator('tbody tr')).toHaveCount(50)
   await page.getByRole('button', { name: /加载更多/ }).click()
   await expect(page.locator('tbody tr')).toHaveCount(65)
@@ -342,4 +367,139 @@ test('mobile drawer, tablet icon rail, keyboard focus and logout', async ({ page
   await page.getByRole('button', { name: '展开导航', exact: true }).click()
   await page.getByRole('button', { name: '退出登录', exact: true }).click()
   await expect(page.getByLabel('管理密钥', { exact: true })).toBeVisible()
+})
+
+// F1 / F2 / F3 / F6 / F11: card shortcuts, a single ⋯ menu, clickable links and
+// the server-declared channel-wide wake action.
+test('card shortcuts, one menu at a time, link in a new tab and wake every workspace', async ({
+  page,
+  request,
+}) => {
+  await page
+    .context()
+    .route('https://cnb.cool/**', (route) => route.fulfill({ status: 200, body: 'ok' }))
+  await signIn(page)
+  await page.getByTestId('nav-accounts').click()
+  const cnb = page.getByTestId('account-cnb:account-0')
+  // F1: the shortcuts the server marked `quick` sit on the card itself.
+  await expect(cnb.locator('.quick-action')).toHaveText(['探测', '唤醒工作区'])
+  // F6: the repository is a link to a new tab and never opens the detail drawer.
+  const repo = cnb.getByRole('link', { name: /Quverse12\/cnb2api/ })
+  await expect(repo).toHaveAttribute('href', 'https://cnb.cool/Quverse12/cnb2api')
+  await expect(repo).toHaveAttribute('target', '_blank')
+  const [popup] = await Promise.all([page.waitForEvent('popup'), repo.click()])
+  await popup.close()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  // F3: a non-destructive action runs in place with a toast, no dialog.
+  await cnb.getByRole('button', { name: '探测', exact: true }).click()
+  await expect(page.locator('.toast').last()).toContainText('已发起探测：CNB 主账号')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  // F2: only one ⋯ menu is open at a time; Esc and an outside click close it.
+  const menu = cnb.getByRole('button', { name: /更多操作/ })
+  await menu.click()
+  await expect(cnb.getByRole('menu')).toHaveCount(1)
+  await page
+    .getByTestId('account-codebuddy:account-1')
+    .getByRole('button', { name: /更多操作/ })
+    .click()
+  await expect(page.getByRole('menu')).toHaveCount(1)
+  await expect(cnb.getByRole('menu')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await menu.click()
+  await expect(cnb.getByRole('menu')).toHaveCount(1)
+  await page.locator('main h1').click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  // F11: one click wakes every workspace of that channel, without a dialog.
+  const wakeAll = page.getByTestId('channel-action-cnb:wake-all')
+  await expect(wakeAll).toHaveText('唤醒全部工作区')
+  const posted = page.waitForRequest(
+    (r) => r.method() === 'POST' && r.url().endsWith('/api/channels/cnb/actions/wake-all'),
+  )
+  await wakeAll.click()
+  await posted
+  // Two CNB accounts exist in the fixture; disabled accounts are skipped server-side.
+  await expect(page.locator('.toast').last()).toContainText(/已发起 \d+ 个工作区唤醒，失败 0 个/)
+  await request.post('/__failure', { data: { action: true } })
+  await wakeAll.click()
+  await expect(page.locator('.toast').last()).toContainText('失败 1 个')
+  await expect(page.locator('.channel-failures')).toContainText('模拟唤醒失败')
+  await request.post('/__failure', { data: { action: false } })
+})
+
+// F8: cooling is a warning tone, so it can never look like a healthy account.
+test('a cooling account is warning-coloured, not green', async ({ page }) => {
+  await signIn(page)
+  await page.getByTestId('nav-accounts').click()
+  const cooling = page.getByTestId('account-cnb:cooling-1').locator('.status-badge')
+  await expect(cooling).toHaveText('冷却中')
+  await expect(cooling).toHaveClass(/amber/)
+  await expect(cooling).toHaveCSS('color', 'rgb(184, 129, 37)')
+  // Healthy accounts stay green for contrast.
+  await expect(page.getByTestId('account-cnb:account-0').locator('.status-badge')).toHaveClass(
+    /green/,
+  )
+})
+
+// F4: the whole console shows "remaining / total" and the bar length is that share.
+test('quota shows the remaining share and warns before it runs out', async ({ page }) => {
+  await signIn(page)
+  await page.getByTestId('nav-accounts').click()
+  const healthy = page.getByTestId('account-cnb:account-0').locator('.quota-inline')
+  await expect(healthy).toContainText('剩余 900 / 1,000 credits')
+  await expect(healthy).toHaveAttribute('data-tone', 'ok')
+  await expect(healthy.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '90')
+  const low = page.getByTestId('account-codebuddy:account-1').locator('.quota-inline')
+  await expect(low).toContainText('剩余 20 / 1,000 积分')
+  await expect(low).toHaveAttribute('data-tone', 'low')
+  await expect(low.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2')
+})
+
+// F9 / F10: list values copy on click, have no copy button and stay on one line.
+test('list values copy on click without a copy button and stay on one line', async ({ page }) => {
+  await signIn(page)
+  await page.getByTestId('nav-models').click()
+  await expect(page.locator('tbody .copy-button')).toHaveCount(0)
+  const model = page.locator('tbody .copyable-value').first()
+  await expect(model).toHaveAttribute('title', 'shared-model')
+  await expect(model).toHaveCSS('white-space', 'nowrap')
+  await expect(model).toHaveCSS('text-overflow', 'ellipsis')
+  await model.click()
+  await expect(model).toHaveText('已复制')
+  await page.getByTestId('nav-keys').click()
+  const masked = page.locator('tbody .copyable-value').first()
+  await expect(masked).toHaveAttribute('title', '点击复制')
+  await masked.click()
+  await expect(masked).toHaveText('已复制')
+  await page.getByTestId('nav-logs').click()
+  await page.getByLabel('刷新频率').selectOption('0')
+  const logModel = page.locator('tbody .copyable-value').first()
+  await logModel.click()
+  await expect(logModel).toHaveText('已复制')
+  // Clicking the value must not open the log detail drawer.
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+// F12 / F13: a channel selection renders the server-declared sections, and the
+// refresh frequency is remembered.
+test('overview channel detail renders server sections and remembers the refresh rate', async ({
+  page,
+}) => {
+  await signIn(page)
+  await page.getByLabel('刷新频率').selectOption('0')
+  await page.getByTestId('filter-cnb').click()
+  await expect(page).toHaveURL(/#overview\?system=cnb/)
+  await expect(page.getByTestId('overview-section-summary')).toContainText('账号与工作区')
+  await expect(page.getByTestId('overview-section-summary')).toContainText('冷却中')
+  await expect(page.getByTestId('overview-section-quota')).toContainText('剩余 900 / 1,000 credits')
+  await expect(page.getByTestId('overview-section-hourly')).toContainText('今日每小时请求')
+  await expect(
+    page.getByTestId('overview-section-recent').getByRole('link', { name: 'Quverse12/cnb2api' }),
+  ).toHaveAttribute('target', '_blank')
+  await page.getByLabel('刷新频率').selectOption('30')
+  await page.reload()
+  await expect(page.getByLabel('刷新频率')).toHaveValue('30')
+  await expect(page.getByTestId('overview-section-summary')).toBeVisible()
+  await page.getByTestId('filter-all').click()
+  await expect(page.getByTestId('overview-card-cnb')).toBeVisible()
 })

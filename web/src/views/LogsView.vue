@@ -16,9 +16,11 @@ import SystemBadge from '../components/SystemBadge.vue'
 import PartialErrors from '../components/PartialErrors.vue'
 import RelativeTime from '../components/RelativeTime.vue'
 import CopyButton from '../components/CopyButton.vue'
+import CopyableValue from '../components/accounts/CopyableValue.vue'
 import ModalShell from '../components/ModalShell.vue'
 import DescriptorList from '../components/DescriptorList.vue'
 import StackedChart from '../components/StackedChart.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import { redact } from '../redact.ts'
 import { usageExtras } from '../channels/registry.ts'
 const system = queryValue('system'),
@@ -37,8 +39,10 @@ const items = ref<LogItem[]>([]),
   failure = ref(''),
   loading = ref(false),
   cursor = ref<string | null>(null),
-  usage = ref<UsageResponse | null>(null),
-  automatic = ref(false)
+  usage = ref<UsageResponse | null>(null)
+/** Refresh frequency in seconds (0 = off), owned by `RefreshControl` (F13). */
+const intervalSeconds = ref(5)
+const refresh = ref<{ markUpdated: () => void; markFailed: () => void } | null>(null)
 const detailItem = ref<LogItem | null>(null)
 const detail = ref<LogDetail | null>(null),
   detailOpen = ref(false),
@@ -55,7 +59,6 @@ const counts = computed(() =>
 )
 let generation = 0,
   detailGeneration = 0,
-  timer: number | undefined,
   debounce: number | undefined,
   live = true
 function params() {
@@ -99,8 +102,11 @@ async function load(more = false) {
   ) {
     failure.value = '请选择有效的开始与结束时间'
     loading.value = false
+    // Not a fetch failure: keep the refresh loop alive without a backoff.
+    refresh.value?.markUpdated()
     return
   }
+  let ok = true
   try {
     if (tab.value === 'usage') {
       const response = await consoleApi.usage({ ...filter, bucket: 'day' })
@@ -123,9 +129,14 @@ async function load(more = false) {
       }
     }
   } catch (e) {
+    ok = false
     if (live && current === generation) failure.value = errorText(e)
   } finally {
     if (live && current === generation) loading.value = false
+    // Pagination is a user action; only a full reload reports to the control.
+    if (!more && current === generation)
+      if (ok) refresh.value?.markUpdated()
+      else refresh.value?.markFailed()
   }
 }
 async function open(item: LogItem) {
@@ -181,26 +192,26 @@ watch(
 onMounted(() => {
   if (tab.value === 'system' && !hasSystem.value) setQuery({ tab: 'request' })
   void load()
-  timer = window.setInterval(() => {
-    if (automatic.value && !document.hidden && !loading.value) void load()
-  }, 60000)
 })
 onBeforeUnmount(() => {
   live = false
   generation++
   detailGeneration++
-  clearInterval(timer)
   clearTimeout(debounce)
 })
 </script>
 <template>
   <section>
     <header class="page-heading">
-      <h1>日志</h1>
+      <h1>请求日志</h1>
       <div class="heading-actions">
-        <label class="check-field"
-          ><input v-model="automatic" type="checkbox" />自动刷新（60 秒）</label
-        ><button class="button" :disabled="loading" @click="load()">
+        <RefreshControl
+          ref="refresh"
+          v-model="intervalSeconds"
+          storage-key="logs-refresh-rate"
+          @tick="load()"
+        />
+        <button class="button" :disabled="loading" @click="load()">
           {{ loading ? '刷新中…' : '刷新' }}
         </button>
       </div>
@@ -346,7 +357,14 @@ onBeforeUnmount(() => {
               <td>{{ item.via === 'unified' ? '统一地址' : '渠道直连' }}</td>
               <td><SystemBadge :system="item.system" /></td>
               <td>
-                <code>{{ item.model || '—' }}</code>
+                <CopyableValue
+                  v-if="item.model"
+                  class="cell-clip"
+                  :value="item.model"
+                  :label="`模型 ${item.model}`"
+                  :title="item.model"
+                  mono
+                /><span v-else>—</span>
               </td>
               <td>{{ item.account || '—' }}</td>
               <td>{{ item.key || '—' }}</td>

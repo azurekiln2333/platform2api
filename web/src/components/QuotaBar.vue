@@ -1,34 +1,42 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Quota } from '../console-types.ts'
-import { formatNumber } from '../console.ts'
+import { formatNumber, quotaProgress } from '../console.ts'
 const props = defineProps<{ quota?: Quota | null }>()
-const percent = computed(() =>
-  Math.min(
-    100,
-    Math.max(
-      0,
-      props.quota?.percent ??
-        (props.quota?.total ? ((props.quota.used ?? 0) / props.quota.total) * 100 : 0),
-    ),
-  ),
-)
+/** The console always shows "remaining / total"; the bar length is that share. */
+const progress = computed(() => quotaProgress(props.quota))
+const unit = computed(() => {
+  const raw = (props.quota?.unit || '').trim()
+  return raw ? ` ${raw}` : ''
+})
+const text = computed(() => {
+  const { remaining, total } = progress.value
+  if (remaining === null && total === null) return '额度未知'
+  if (total === null) return `剩余 ${formatNumber(remaining)}${unit.value}`
+  return `剩余 ${formatNumber(remaining)} / ${formatNumber(total)}${unit.value}`
+})
 </script>
 <template>
   <div
     v-if="quota"
     class="quota-inline"
-    :title="`${quota.used ?? '—'} / ${quota.total ?? '—'} ${quota.unit || ''}`"
+    :class="`quota-${progress.tone}`"
+    :title="`${text}${quota.note ? ` · ${quota.note}` : ''}`"
+    :data-tone="progress.tone"
   >
-    <span>{{ formatNumber(quota.used) }} / {{ formatNumber(quota.total) }} {{ quota.unit }}</span
-    ><progress
-      v-if="quota.total || quota.percent != null"
-      :value="percent"
-      max="100"
-      aria-label="已用额度"
-    /><small v-if="quota.remaining != null" class="cell-secondary"
-      >剩余 {{ formatNumber(quota.remaining) }} {{ quota.unit }}</small
+    <span class="quota-remaining">{{ text }}</span>
+    <!-- A total is required to draw a bar: an unknown total must not invent one. -->
+    <div
+      v-if="progress.percent !== null"
+      class="quota-meter"
+      role="progressbar"
+      :aria-label="`剩余额度 ${Math.round(progress.percent)}%`"
+      :aria-valuenow="Math.round(progress.percent)"
+      aria-valuemin="0"
+      aria-valuemax="100"
     >
+      <i :style="{ width: `${progress.percent}%` }" />
+    </div>
   </div>
   <span v-else>—</span>
 </template>

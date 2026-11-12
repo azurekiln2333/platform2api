@@ -304,6 +304,7 @@ export function normalizeAccountList(payload: unknown): PanelAccount[] {
   })
 }
 
+/** Used share of the total, 0-100. Legacy: the console now shows remaining. */
 export function quotaPercent(quota: PanelAccount['quota']): number | null {
   if (!quota) return null
   if (typeof quota.percent === 'number' && Number.isFinite(quota.percent))
@@ -312,6 +313,56 @@ export function quotaPercent(quota: PanelAccount['quota']): number | null {
   const used = finite(quota.used)
   if (total === null || total <= 0 || used === null) return null
   return Math.max(0, Math.min(100, (used / total) * 100))
+}
+
+/** Anything the console may receive as a quota object, per-channel or not. */
+export type QuotaLike =
+  | {
+      total?: number | null
+      used?: number | null
+      remaining?: number | null
+      percent?: number | null
+    }
+  | null
+  | undefined
+
+export interface QuotaProgress {
+  /** Filled from `remaining`, or from `total - used` when only those were sent. */
+  remaining: number | null
+  total: number | null
+  /** Remaining share of the total, 0-100; `null` when the total is unknown. */
+  percent: number | null
+  /** `low` = nearly exhausted, `warn` = getting low, `ok` = healthy. */
+  tone: 'ok' | 'warn' | 'low'
+}
+
+/**
+ * The whole console shows "remaining / total", so the bar length is the remaining
+ * share. A server that only reports `used` still gets a remaining value by
+ * subtracting, which keeps older payloads working.
+ */
+export function quotaProgress(quota: QuotaLike): QuotaProgress {
+  const total = finite(quota?.total)
+  const used = finite(quota?.used)
+  const usedPercent = finite(quota?.percent)
+  let remaining = finite(quota?.remaining)
+  if (remaining === null && total !== null && used !== null) remaining = total - used
+  if (remaining === null && total !== null && usedPercent !== null)
+    // `total * (1 - p)` loses precision; subtract the used amount instead.
+    remaining = total - (total * usedPercent) / 100
+  if (remaining !== null) remaining = Math.max(0, remaining)
+  if (remaining !== null && total !== null && total > 0) remaining = Math.min(remaining, total)
+  const percent =
+    remaining === null || total === null || total <= 0
+      ? null
+      : Math.max(0, Math.min(100, Math.round((remaining / total) * 10000) / 100))
+  const tone: QuotaProgress['tone'] =
+    remaining === 0 || (percent !== null && percent < 5)
+      ? 'low'
+      : percent !== null && percent < 20
+        ? 'warn'
+        : 'ok'
+  return { remaining, total, percent, tone }
 }
 
 const STATUS_LABELS: Record<string, string> = {

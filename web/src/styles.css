@@ -1255,6 +1255,22 @@ button.button,
   background: currentColor;
   border-radius: 50%;
 }
+/* `statusTone()` returns these token names; without them every badge fell back to green. */
+.status-badge.green {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.status-badge.amber {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.status-badge.slate,
+.status-badge.gray {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+}
 .status-badge.cooling,
 .status-badge.quota {
   background: var(--amber-soft);
@@ -1270,6 +1286,20 @@ button.button,
 .status-badge.offline {
   background: var(--red-soft);
   color: var(--red);
+}
+/* Small neutral marker (「内置」, badge descriptors). It was used with no rule at all. */
+.status-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 .cell-secondary {
   display: block;

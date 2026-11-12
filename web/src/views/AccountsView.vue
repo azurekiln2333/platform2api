@@ -1,6 +1,26 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { LayoutGrid, List, LoaderCircle, MoreHorizontal, Plus, RefreshCw } from '@lucide/vue'
+import {
+  computed,
+  defineAsyncComponent,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+  type Component,
+} from 'vue'
+import {
+  Activity,
+  Gauge,
+  LayoutGrid,
+  List,
+  LoaderCircle,
+  MoreHorizontal,
+  Plus,
+  Power,
+  RefreshCw,
+  Rocket,
+  Zap,
+} from '@lucide/vue'
 import { consoleApi } from '../api.ts'
 import { channels, channelLabel, loadChannels, query, setQuery, absoluteTime } from '../console.ts'
 import { notify } from '../panel.ts'
@@ -10,7 +30,7 @@ import ChannelFilter from '../components/ChannelFilter.vue'
 import PartialErrors from '../components/PartialErrors.vue'
 import DescriptorList from '../components/DescriptorList.vue'
 import RelativeTime from '../components/RelativeTime.vue'
-import CopyButton from '../components/CopyButton.vue'
+import CopyableValue from '../components/accounts/CopyableValue.vue'
 import QuotaBar from '../components/QuotaBar.vue'
 import SystemBadge from '../components/SystemBadge.vue'
 import ModalShell from '../components/ModalShell.vue'
@@ -34,12 +54,17 @@ const auth = ref<{ system: string; accountId?: string; accountLabel?: string } |
 const operation = ref<{ action: Action; items: Account[]; tags: string } | null>(null)
 const busy = ref(false)
 const operationError = ref('')
-const actionResult = ref<{
-  account: Account
-  label: string
-  display: Descriptor[]
-  pending?: boolean
-} | null>(null)
+/** 正在执行的账号级操作（accountId → actionId），用于按钮原地转圈，不再弹对话框。 */
+const pending = ref<Record<string, string>>({})
+/** 同一时刻只允许一个卡片的「⋯」菜单展开。 */
+const openMenu = ref('')
+/** 渠道级操作（如「唤醒全部工作区」）的运行状态，按 `system:action` 归集。 */
+const channelRuns = ref<
+  Record<
+    string,
+    { pending: boolean; summary: string; failed: { id: string; label: string; message: string }[] }
+  >
+>({})
 const resultsByAccount = ref<
   Record<string, { label: string; display: Descriptor[]; pending?: boolean }>
 >({})
@@ -120,6 +145,217 @@ const addChannel = computed(() => channels.value.find((item) => item.system === 
 function online(health: string) {
   return !['offline', 'down', 'error', 'unknown'].includes(health)
 }
+
+/* ── 快捷操作与单一菜单（F1 / F2 / F3） ───────────────────────────── */
+
+/** 会改变数据或不可撤销的操作才弹确认框，其余原地执行 + toast。 */
+const DESTRUCTIVE_ACTIONS = ['delete', 'disable', 'reset-usage', 'rotate']
+/** 明确无副作用、不弹框的动作。 */
+const SAFE_ACTIONS = /wake|start|resume|probe|test|check|selftest|quota|usage|refresh|reload/i
+const ACTION_ICONS: Record<string, Component> = {
+  probe: Activity,
+  selftest: Activity,
+  check: Activity,
+  wake: Rocket,
+  'wake-all': Rocket,
+  start: Rocket,
+  quota: Gauge,
+  'refresh-quota': Gauge,
+  usage: Gauge,
+  refresh: RefreshCw,
+  power: Power,
+}
+function isDestructive(action: Action) {
+  if (DESTRUCTIVE_ACTIONS.includes(action.id)) return true
+  if (action.danger) return true
+  // 探活 / 唤醒 / 刷额度这类动作即使后端带了 confirm，也不弹确认框（F3）。
+  if (SAFE_ACTIONS.test(action.id)) return false
+  return Boolean(action.confirm)
+}
+function actionIcon(id: string): Component {
+  const key = id.toLowerCase()
+  if (ACTION_ICONS[key]) return ACTION_ICONS[key]
+  if (/wake|start|resume/.test(key)) return Rocket
+  if (/probe|test|check/.test(key)) return Activity
+  if (/quota|usage|credit/.test(key)) return Gauge
+  if (/refresh|reload/.test(key)) return RefreshCw
+  if (/power|enable|disable/.test(key)) return Power
+  return Zap
+}
+/** 唤醒类动作统一叫「唤醒」，让 toast 读作「已发起唤醒：<账号>」。 */
+function actionVerb(action: Action) {
+  return /wake|start|resume/.test(action.id.toLowerCase()) ? '唤醒' : action.label
+}
+/**
+ * 卡片底部的快捷按钮：优先后端标记的 `quick`，否则回退到前 2 个非破坏性动作。
+ * 一次最多显示 3 个，其余进「⋯」。
+ */
+function quickActions(item: Account): Action[] {
+  const usable = availableActions(item).filter(
+    (action) => action.id !== 'edit' && !isDestructive(action),
+  )
+  const marked = usable.filter((action) => action.quick)
+  if (marked.length) return marked.slice(0, 3)
+  return item.actions.filter((action) => !isDestructive(action)).slice(0, 2)
+}
+function menuActions(item: Account): Action[] {
+  const quick = new Set(quickActions(item).map((action) => action.id))
+  const toggleShown = hasToggle(item)
+  return availableActions(item).filter(
+    (action) =>
+      !quick.has(action.id) && !(toggleShown && ['enable', 'disable'].includes(action.id)),
+  )
+}
+function hasToggle(item: Account) {
+  return availableActions(item).some((action) => ['enable', 'disable'].includes(action.id))
+}
+/** 状态色跟共用映射走（systems.ts），这里只额外区分「已停用」（F8）。 */
+function badgeTone(item: Account) {
+  return item.enabled ? statusTone(item.status) : 'gray'
+}
+function closeMenu() {
+  openMenu.value = ''
+}
+function toggleMenu(id: string) {
+  openMenu.value = openMenu.value === id ? '' : id
+}
+function openDetail(id: string) {
+  closeMenu()
+  detailId.value = id
+}
+function openTagging(item: Account) {
+  closeMenu()
+  tagging.value = item
+}
+function outsideClick(event: Event) {
+  const target = event.target
+  if (target instanceof Element && target.closest('.account-menu')) return
+  closeMenu()
+}
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeMenu()
+}
+
+interface ChannelActionItem {
+  id: string
+  label: string
+  system: string
+  channelLabel: string
+}
+/** 渠道级操作由后端在 `capabilities.accounts.channelActions` 里声明，前端不写死渠道。 */
+const channelActionList = computed<ChannelActionItem[]>(() =>
+  channels.value.flatMap((channel) =>
+    (channel.capabilities.accounts.channelActions || []).flatMap<ChannelActionItem>((item) => {
+      if (!item || typeof item.id !== 'string' || !item.id) return []
+      return [
+        {
+          id: item.id,
+          label: typeof item.label === 'string' && item.label ? item.label : item.id,
+          system: channel.system,
+          channelLabel: channel.label,
+        },
+      ]
+    }),
+  ),
+)
+const channelButtons = computed(() => {
+  const list = channelActionList.value
+  return list.map((item) => {
+    const key = `${item.system}:${item.id}`
+    const state = channelRuns.value[key]
+    return {
+      ...item,
+      key,
+      label: list.length > 1 ? `${item.channelLabel} ${item.label}` : item.label,
+      pending: state?.pending === true,
+      failed: state?.failed || [],
+      disabled:
+        state?.pending === true ||
+        !online(channels.value.find((channel) => channel.system === item.system)?.health || ''),
+    }
+  })
+})
+const channelFailures = computed(() =>
+  channelActionList.value.flatMap(
+    (item) => channelRuns.value[`${item.system}:${item.id}`]?.failed || [],
+  ),
+)
+function channelSummary(item: ChannelActionItem, started: number, failed: number) {
+  return /wake/i.test(item.id)
+    ? `已发起 ${started} 个工作区唤醒，失败 ${failed} 个`
+    : `已发起${item.label}：成功 ${started} 个，失败 ${failed} 个`
+}
+async function runChannelAction(item: ChannelActionItem) {
+  const key = `${item.system}:${item.id}`
+  if (channelRuns.value[key]?.pending) return
+  channelRuns.value = {
+    ...channelRuns.value,
+    [key]: { pending: true, summary: '', failed: [] },
+  }
+  try {
+    // One typed helper for the channel-action contract (api.ts), so the payload
+    // shape is normalized in exactly one place.
+    const { started, failed } = await consoleApi.channelAction(item.system, item.id)
+    const summary = channelSummary(item, started, failed.length)
+    channelRuns.value = {
+      ...channelRuns.value,
+      [key]: { pending: false, summary, failed },
+    }
+    notify(summary, failed.length > 0)
+    await reload()
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : '操作失败'
+    channelRuns.value = {
+      ...channelRuns.value,
+      [key]: { pending: false, summary: `${item.label}失败：${message}`, failed: [] },
+    }
+    notify(`${item.label}失败：${message}`, true)
+  }
+}
+/**
+ * 非破坏性账号操作：不弹窗；按钮原地转圈，结果用 toast 说明（F3）。
+ * 详细结果仍然记在 `resultsByAccount`，可在详情抽屉里看。
+ */
+async function runInline(item: Account, action: Action) {
+  if (pending.value[item.id]) return
+  closeMenu()
+  pending.value = { ...pending.value, [item.id]: action.id }
+  try {
+    const result = await consoleApi.accountAction(item.id, action.id)
+    if (result && typeof result === 'object') {
+      const body = result as Record<string, unknown>
+      const display: Descriptor[] = [
+        { key: 'at', label: '操作时间', kind: 'time', value: new Date().toISOString() },
+        ...['message', 'summary', 'error']
+          .filter((key) => typeof body[key] === 'string')
+          .map((key) => ({
+            key,
+            label: key === 'error' ? '错误' : key === 'summary' ? '结果' : '说明',
+            kind: 'text' as const,
+            value: body[key],
+          })),
+      ]
+      if (Array.isArray(body.display)) display.push(...(body.display as Descriptor[]))
+      resultsByAccount.value[item.id] = { label: action.label, display }
+      if (typeof body.jobId === 'string') {
+        resultsByAccount.value[item.id].pending = true
+        pollResult(item, body.jobId, 0)
+      }
+      if (typeof body.error === 'string' && body.error) throw new Error(body.error)
+    }
+    notify(`已发起${actionVerb(action)}：${item.label}`)
+    await reload()
+  } catch (cause) {
+    notify(
+      `${actionVerb(action)}失败：${cause instanceof Error ? cause.message : '操作失败'}`,
+      true,
+    )
+  } finally {
+    const next = { ...pending.value }
+    delete next[item.id]
+    pending.value = next
+  }
+}
 async function reload() {
   const request = ++generation
   loading.value = true
@@ -180,7 +416,7 @@ function beginAdd(kind: string) {
   adding.value = false
 }
 function run(item: Account, action: Action) {
-  if (busy.value) return
+  closeMenu()
   if (action.id === 'edit' && editors[item.system]) {
     nativeEditor.value = { system: item.system, account: item, mode: 'edit' }
     return
@@ -201,14 +437,14 @@ function run(item: Account, action: Action) {
     tagging.value = item
     return
   }
+  // 只有破坏性操作才弹确认框；其余直接在按钮上转圈并用 toast 说明结果（F3）。
+  if (!isDestructive(action)) {
+    void runInline(item, action)
+    return
+  }
+  if (busy.value) return
   operation.value = { action, items: [item], tags: '' }
   operationError.value = ''
-  if (
-    !action.danger &&
-    !action.confirm &&
-    !['delete', 'disable', 'reset-usage', 'rotate'].includes(action.id)
-  )
-    void execute()
 }
 function runBatch(action: string) {
   operation.value = {
@@ -266,8 +502,6 @@ async function execute() {
             resultsByAccount.value[item.id].pending = true
             pollResult(item, body.jobId, 0)
           } else if (typeof body.message === 'string') notify(body.message)
-          if (current.items.length === 1)
-            actionResult.value = { account: item, ...resultsByAccount.value[item.id] }
         }
       }
     } catch (cause) {
@@ -329,8 +563,6 @@ function pollResult(account: Account, jobId: string, attempt: number) {
             })
           void reload()
         }
-        if (actionResult.value?.account.id === account.id)
-          actionResult.value = { account, ...savedResult }
       } catch (cause) {
         if (resultsByAccount.value[account.id]) {
           resultsByAccount.value[account.id].pending = false
@@ -342,8 +574,6 @@ function pollResult(account: Account, jobId: string, attempt: number) {
               value: cause instanceof Error ? cause.message : '读取探测结果失败',
             },
           ]
-          if (actionResult.value?.account.id === account.id)
-            actionResult.value = { account, ...resultsByAccount.value[account.id] }
         }
       }
     }, 2000),
@@ -357,22 +587,35 @@ function saved() {
   tagging.value = null
   void reload()
 }
-watch(view, (value) => localStorage.setItem('platform-account-view', value))
+watch(view, (value) => {
+  localStorage.setItem('platform-account-view', value)
+  closeMenu()
+})
 watch(
   () => [query.value.system, query.value.status, query.value.tag, query.value.q],
   () => {
     selected.value = []
+    closeMenu()
   },
 )
 onMounted(() => {
   void loadChannels()
   void reload()
   if (query.value.add) openAdd()
+  // 点外部 / Esc / 滚动都收起「⋯」菜单（F2）。
+  document.addEventListener('pointerdown', outsideClick, true)
+  document.addEventListener('keydown', onKeydown)
+  window.addEventListener('scroll', closeMenu, true)
+  window.addEventListener('resize', closeMenu)
 })
 onBeforeUnmount(() => {
   alive = false
   generation++
   for (const timer of resultTimers.values()) window.clearTimeout(timer)
+  document.removeEventListener('pointerdown', outsideClick, true)
+  document.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('scroll', closeMenu, true)
+  window.removeEventListener('resize', closeMenu)
 })
 </script>
 
@@ -382,7 +625,7 @@ onBeforeUnmount(() => {
       <div>
         <span class="eyebrow">ACCOUNTS</span>
         <h1>
-          账号 <span class="heading-count">{{ matching.length }}</span>
+          账号管理 <span class="heading-count">{{ matching.length }}</span>
         </h1>
       </div>
       <div class="heading-actions">
@@ -403,6 +646,30 @@ onBeforeUnmount(() => {
           :counts="counts"
           @update:model-value="setQuery({ system: $event })"
         />
+        <div v-if="channelButtons.length" class="channel-actions">
+          <button
+            v-for="item in channelButtons"
+            :key="item.key"
+            type="button"
+            class="button"
+            :disabled="item.disabled"
+            :aria-busy="item.pending"
+            :data-testid="`channel-action-${item.key}`"
+            @click="runChannelAction(item)"
+          >
+            <LoaderCircle v-if="item.pending" :size="15" class="spin" />
+            <Rocket v-else :size="15" />
+            {{ item.label }}
+          </button>
+          <details v-if="channelFailures.length" class="channel-failures">
+            <summary>失败明细（{{ channelFailures.length }}）</summary>
+            <ul>
+              <li v-for="failure in channelFailures" :key="failure.id">
+                {{ failure.label }}：{{ failure.message }}
+              </li>
+            </ul>
+          </details>
+        </div>
         <template v-if="chosen.length"
           ><strong>已选择 {{ chosen.length }} 个账号</strong
           ><button
@@ -481,8 +748,8 @@ onBeforeUnmount(() => {
           class="account-card"
           :data-testid="`account-${account.id}`"
           tabindex="0"
-          @click="detailId = account.id"
-          @keydown.enter.self="detailId = account.id"
+          @click="openDetail(account.id)"
+          @keydown.enter.self="openDetail(account.id)"
         >
           <header>
             <input
@@ -491,56 +758,90 @@ onBeforeUnmount(() => {
               :aria-label="`选择账号 ${account.label}`"
               @click.stop
               @change="toggleSelection(account.id)"
-            /><SystemBadge :system="account.system" /><strong>{{ account.label }}</strong
-            ><span class="status-badge" :class="statusTone(account.status)">{{
+            /><SystemBadge :system="account.system" /><strong :title="account.label">{{
+              account.label
+            }}</strong
+            ><span class="status-badge" :class="badgeTone(account)">{{
               account.enabled ? statusLabel(account.status) : '已停用'
             }}</span>
           </header>
           <QuotaBar v-if="account.quota" :quota="account.quota" /><DescriptorList
             :items="(account.display || []).slice(0, 4)"
+            one-line
           />
           <footer @click.stop>
             <div class="tag-chips">
               <span v-for="tag in account.tags" :key="tag" class="tag-chip">{{ tag }}</span>
             </div>
-            <button
-              v-if="
-                availableActions(account).some((action) =>
-                  ['enable', 'disable'].includes(action.id),
-                )
-              "
-              class="button"
-              role="switch"
-              :aria-checked="account.enabled"
-              :aria-label="`${account.enabled ? '停用' : '启用'}账号 ${account.label}`"
-              @click="
-                run(account, {
-                  id: account.enabled ? 'disable' : 'enable',
-                  label: account.enabled ? '停用' : '启用',
-                  danger: account.enabled,
-                })
-              "
-            >
-              {{ account.enabled ? '已启用' : '已停用' }}
-            </button>
-            <details class="account-menu">
-              <summary :aria-label="`${account.label} 的更多操作`">
-                <MoreHorizontal :size="18" />
-              </summary>
-              <div>
-                <button class="button" @click="detailId = account.id">查看详情</button
-                ><button class="button" @click="tagging = account">编辑标签</button
-                ><button
-                  v-for="action in availableActions(account)"
-                  :key="action.id"
-                  class="button"
-                  :class="{ danger: action.danger }"
-                  @click="run(account, action)"
+            <div class="card-actions">
+              <button
+                v-for="action in quickActions(account)"
+                :key="action.id"
+                type="button"
+                class="button quick-action"
+                :disabled="pending[account.id] === action.id"
+                @click="run(account, action)"
+              >
+                <LoaderCircle v-if="pending[account.id] === action.id" :size="14" class="spin" />
+                <component :is="actionIcon(action.id)" v-else :size="14" />
+                {{ action.label }}
+              </button>
+              <button
+                v-if="hasToggle(account)"
+                type="button"
+                class="button"
+                role="switch"
+                :aria-checked="account.enabled"
+                :aria-label="`${account.enabled ? '停用' : '启用'}账号 ${account.label}`"
+                @click="
+                  run(account, {
+                    id: account.enabled ? 'disable' : 'enable',
+                    label: account.enabled ? '停用' : '启用',
+                    danger: account.enabled,
+                  })
+                "
+              >
+                {{ account.enabled ? '已启用' : '已停用' }}
+              </button>
+              <div class="account-menu">
+                <button
+                  type="button"
+                  class="icon-button menu-trigger"
+                  :aria-label="`${account.label} 的更多操作`"
+                  :aria-expanded="openMenu === account.id"
+                  @click="toggleMenu(account.id)"
                 >
-                  {{ action.label }}
+                  <MoreHorizontal :size="18" />
                 </button>
+                <div v-if="openMenu === account.id" class="menu-panel" role="menu">
+                  <button
+                    type="button"
+                    class="button"
+                    role="menuitem"
+                    @click="openDetail(account.id)"
+                  >
+                    查看详情</button
+                  ><button
+                    type="button"
+                    class="button"
+                    role="menuitem"
+                    @click="openTagging(account)"
+                  >
+                    编辑标签</button
+                  ><button
+                    v-for="action in menuActions(account)"
+                    :key="action.id"
+                    type="button"
+                    class="button"
+                    :class="{ danger: action.danger }"
+                    role="menuitem"
+                    @click="run(account, action)"
+                  >
+                    {{ action.label }}
+                  </button>
+                </div>
               </div>
-            </details>
+            </div>
           </footer>
         </article>
       </div>
@@ -548,7 +849,7 @@ onBeforeUnmount(() => {
         <table class="account-table" data-testid="accounts-table">
           <thead>
             <tr>
-              <th>
+              <th class="select-cell">
                 <input
                   type="checkbox"
                   :checked="chosen.length === matching.length"
@@ -560,7 +861,7 @@ onBeforeUnmount(() => {
                   "
                 />
               </th>
-              <th>渠道</th>
+              <th class="channel-cell">渠道</th>
               <th>账号</th>
               <th>状态</th>
               <th>额度</th>
@@ -575,10 +876,10 @@ onBeforeUnmount(() => {
               :key="account.id"
               :data-testid="`account-${account.id}`"
               tabindex="0"
-              @click="detailId = account.id"
-              @keydown.enter.self="detailId = account.id"
+              @click="openDetail(account.id)"
+              @keydown.enter.self="openDetail(account.id)"
             >
-              <td @click.stop>
+              <td class="select-cell" @click.stop>
                 <input
                   type="checkbox"
                   :checked="selected.includes(account.id)"
@@ -586,22 +887,26 @@ onBeforeUnmount(() => {
                   @change="toggleSelection(account.id)"
                 />
               </td>
-              <td><SystemBadge :system="account.system" /></td>
+              <td class="channel-cell"><SystemBadge :system="account.system" /></td>
               <td>
-                <strong>{{ account.label }}</strong>
+                <strong class="account-name" :title="account.label">{{ account.label }}</strong>
                 <div class="cell-secondary">
                   <template v-if="typeof account.primary === 'string'">{{
                     account.primary
                   }}</template
-                  ><DescriptorList v-else-if="account.primary" :items="account.primary" />
+                  ><DescriptorList
+                    v-else-if="account.primary"
+                    :items="account.primary"
+                    one-line
+                    click-copy
+                  />
                 </div>
                 <div class="account-id" @click.stop>
-                  <code>{{ account.id }}</code
-                  ><CopyButton :value="account.id" />
+                  <CopyableValue :value="account.id" :label="`账号 ID ${account.id}`" mono />
                 </div>
               </td>
               <td>
-                <span class="status-badge" :class="statusTone(account.status)">{{
+                <span class="status-badge" :class="badgeTone(account)">{{
                   account.enabled ? statusLabel(account.status) : '已停用'
                 }}</span>
               </td>
@@ -623,13 +928,13 @@ onBeforeUnmount(() => {
                   <button
                     class="button"
                     :aria-label="`编辑标签 ${account.label}`"
-                    @click="tagging = account"
+                    @click="openTagging(account)"
                   >
                     编辑标签</button
                   ><button
                     class="button"
                     :aria-label="`查看账号 ${account.label}`"
-                    @click="detailId = account.id"
+                    @click="openDetail(account.id)"
                   >
                     详情
                   </button>
@@ -648,8 +953,7 @@ onBeforeUnmount(() => {
       ><div class="modal-body">
         <SystemBadge :system="detail.system" />
         <p class="account-id">
-          <code>{{ detail.id }}</code
-          ><CopyButton :value="detail.id" />
+          <CopyableValue :value="detail.id" :label="`账号 ID ${detail.id}`" mono />
         </p>
         <QuotaBar v-if="detail.quota" :quota="detail.quota" />
         <div v-for="(quota, index) in detail.quota?.metrics || []" :key="index">
@@ -670,9 +974,12 @@ onBeforeUnmount(() => {
             :key="action.id"
             class="button"
             :class="{ danger: action.danger }"
+            :disabled="pending[detail.id] === action.id"
             @click="run(detail, action)"
           >
-            {{ action.label }}
+            <LoaderCircle v-if="pending[detail.id] === action.id" :size="14" class="spin" />{{
+              action.label
+            }}
           </button>
         </div>
       </div></ModalShell
@@ -730,17 +1037,6 @@ onBeforeUnmount(() => {
       @saved="saved"
       @result="nativeResult"
     />
-    <ModalShell
-      v-if="actionResult"
-      :title="`${actionResult.label} · ${actionResult.account.label}`"
-      @close="actionResult = null"
-      ><div class="modal-body">
-        <SystemBadge :system="actionResult.account.system" />
-        <p v-if="actionResult.pending" role="status">
-          <LoaderCircle :size="15" class="spin" />正在探测…
-        </p>
-        <DescriptorList :items="actionResult.display" absolute /></div
-    ></ModalShell>
     <TagEditor
       v-if="tagging"
       :account="tagging"
@@ -818,51 +1114,94 @@ onBeforeUnmount(() => {
 }
 .account-card > header strong {
   flex: 1;
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .account-card > footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin-top: 16px;
 }
 .account-card > footer .tag-chips {
-  flex: 1;
+  min-height: 20px;
+}
+.card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.quick-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 5px 9px;
+}
+.channel-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.channel-failures {
+  font-size: 12px;
+  color: var(--muted);
+}
+.channel-failures summary {
+  cursor: pointer;
+  color: var(--amber);
+}
+.channel-failures ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  max-width: 420px;
+  max-height: 120px;
+  overflow: auto;
 }
 .account-id {
   display: flex;
   align-items: center;
-  gap: 6px;
+  min-width: 0;
   max-width: 320px;
 }
-.account-id code {
-  overflow-wrap: anywhere;
+.account-id > .copyable-value {
+  flex: 1;
+  min-width: 0;
   color: var(--muted);
   font-size: 11px;
 }
+.account-name {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .account-menu {
   position: relative;
+  margin-left: auto;
 }
-.account-menu summary {
-  list-style: none;
-  padding: 6px;
+.menu-trigger {
   border: 1px solid var(--line);
-  border-radius: 5px;
-  cursor: pointer;
 }
-.account-menu > div {
+.menu-panel {
   position: absolute;
-  z-index: 5;
+  z-index: 20;
   right: 0;
-  top: 100%;
+  top: calc(100% + 4px);
   display: grid;
-  min-width: 160px;
-  padding: 8px;
-  gap: 4px;
+  min-width: 168px;
+  padding: 6px;
+  gap: 2px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: 0 5px 20px #0002;
+}
+.menu-panel .button {
+  justify-content: flex-start;
+  text-align: left;
 }
 .account-detail-actions {
   flex-wrap: wrap;
@@ -899,6 +1238,46 @@ onBeforeUnmount(() => {
   background: var(--surface);
   z-index: 1;
 }
+/* 勾选列独立定宽，渠道列不再与复选框重叠（F7）。 */
+.accounts-page .account-table th.select-cell,
+.accounts-page .account-table td.select-cell {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  padding-left: 14px;
+  padding-right: 8px;
+}
+.accounts-page .account-table th.channel-cell,
+.accounts-page .account-table td.channel-cell {
+  width: 108px;
+  min-width: 108px;
+  overflow: hidden;
+}
+.accounts-page .account-table .system-badge {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+.accounts-page .account-table th:nth-child(4),
+.accounts-page .account-table td:nth-child(4) {
+  width: 96px;
+}
+.accounts-page .account-table th:nth-child(5),
+.accounts-page .account-table td:nth-child(5) {
+  width: 150px;
+}
+.accounts-page .account-table th:nth-child(6),
+.accounts-page .account-table td:nth-child(6) {
+  width: 108px;
+}
+.accounts-page .account-table th:last-child,
+.accounts-page .account-table td:last-child {
+  width: 152px;
+}
+/* 状态色由 styles.css 的 .status-badge.<tone> 统一给出，本页不重复定义。 */
 .account-card input[type='checkbox'],
 .accounts-page table input[type='checkbox'] {
   width: 16px;

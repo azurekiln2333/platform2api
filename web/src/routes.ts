@@ -1,11 +1,12 @@
 export type PageId = 'overview' | 'accounts' | 'keys' | 'models' | 'logs' | 'settings'
+/** Every label is exactly four characters so the sidebar never looks ragged. */
 export const SHELL_NAV: readonly { id: PageId; label: string }[] = [
-  { id: 'overview', label: '概览' },
-  { id: 'accounts', label: '账号' },
-  { id: 'keys', label: '密钥' },
-  { id: 'models', label: '模型' },
-  { id: 'logs', label: '日志' },
-  { id: 'settings', label: '设置' },
+  { id: 'overview', label: '运行概览' },
+  { id: 'accounts', label: '账号管理' },
+  { id: 'keys', label: '密钥管理' },
+  { id: 'models', label: '模型列表' },
+  { id: 'logs', label: '请求日志' },
+  { id: 'settings', label: '系统设置' },
 ]
 const legacy: Record<string, PageId> = {
   overview: 'overview',

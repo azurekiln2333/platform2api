@@ -36,7 +36,14 @@ const channels = channelIds.map((system) => ({
   unifiedUrl: `http://127.0.0.1:${port}/v1`,
   inferenceUrl: `https://${system}.example.invalid/v1`,
   inference: { url: `https://${system}.example.invalid/v1`, routes: ['/v1/chat/completions'] },
-  capabilities: caps,
+  capabilities: {
+    ...caps,
+    // Channel-level operations are declared by the server; only CNB has one here.
+    accounts: {
+      ...caps.accounts,
+      channelActions: system === 'cnb' ? [{ id: 'wake-all', label: '唤醒全部工作区' }] : [],
+    },
+  },
 }))
 const partial = [{ system: 'zcode', message: '测试渠道离线', code: 'upstream_unavailable' }]
 let accounts,
@@ -48,6 +55,7 @@ let accounts,
   settingsRevision,
   failDelete,
   failSave,
+  failAction,
   keySequence,
   modelRevision,
   catalog
@@ -60,21 +68,56 @@ function reset() {
       label: `${labels[system]} 主账号`,
       status: 'ok',
       enabled: true,
-      quota: { unit: index === 0 ? 'credits' : '积分', total: 1000, used: 100, remaining: 900 },
+      quota: {
+        unit: index === 0 ? 'credits' : '积分',
+        total: 1000,
+        used: index === 0 ? 100 : 980,
+        remaining: index === 0 ? 900 : 20,
+      },
       lastUsedAt: now,
       tags: [system, '测试'],
       primary: `${labels[system]} 账号信息`,
       display: [
-        { key: 'identity', label: '账号标识', kind: 'mono', value: `account-${index}` },
+        {
+          key: 'identity',
+          label: '账号标识',
+          kind: 'mono',
+          value: `${system}:7dde1520-0883-4f00-9a3b-2f6a1c0d4e77`,
+        },
         { key: 'probe', label: '最近探测', kind: 'text', value: '成功' },
+        ...(system === 'cnb'
+          ? [
+              {
+                key: 'repo',
+                label: '仓库',
+                kind: 'link',
+                value: 'Quverse12/cnb2api',
+                href: 'https://cnb.cool/Quverse12/cnb2api',
+              },
+            ]
+          : []),
       ],
       actions: [
         { id: 'edit', label: '编辑' },
-        { id: 'probe', label: '探测' },
+        { id: 'probe', label: '探测', quick: true },
+        ...(system === 'cnb' ? [{ id: 'wake', label: '唤醒工作区', quick: true }] : []),
         { id: 'disable', label: '停用', danger: true },
         { id: 'delete', label: '删除', danger: true },
       ],
     }))
+  // F8: a cooling account must render in the warning colour, never in green.
+  accounts.push({
+    id: 'cnb:cooling-1',
+    system: 'cnb',
+    label: 'CNB 冷却账号',
+    status: 'cooling',
+    enabled: true,
+    quota: { unit: 'credits', total: 1000, used: 800, remaining: 200 },
+    lastUsedAt: now,
+    tags: ['cnb'],
+    display: [{ key: 'probe', label: '最近探测', kind: 'text', value: '等待冷却' }],
+    actions: [{ id: 'probe', label: '探测', quick: true }],
+  })
   keys = [
     {
       id: 'codebuddy:direct-1',
@@ -113,6 +156,7 @@ function reset() {
   settingsRevision = 3
   failDelete = false
   failSave = false
+  failAction = false
   keySequence = 0
   modelRevision = 7
   catalog = [
@@ -218,6 +262,7 @@ const server = createServer(async (req, res) => {
       const input = await body(req)
       failDelete = !!input.delete
       failSave = !!input.save
+      failAction = !!input.action
       return json(res, 200, { ok: true })
     }
     if (path === '/api/auth/config')
@@ -257,6 +302,82 @@ const server = createServer(async (req, res) => {
       })
     }
     if (path === '/api/channels') return json(res, 200, channels)
+    const channelAction = /^\/api\/channels\/([^/]+)\/actions\/([^/]+)$/.exec(path)
+    if (channelAction) {
+      // Mirrors `POST /api/channels/:system/actions/:action` (U3).
+      const affected = accounts.filter((item) => item.system === channelAction[1])
+      const failed = failAction
+        ? [
+            {
+              id: affected[0]?.id || '',
+              label: affected[0]?.label || '账号',
+              message: '模拟唤醒失败',
+            },
+          ]
+        : []
+      return json(res, 200, {
+        total: affected.length,
+        started: affected.length - failed.length,
+        failed,
+      })
+    }
+    const systemOverview = /^\/api\/overview\/([^/]+)$/.exec(path)
+    if (systemOverview)
+      return json(res, 200, {
+        system: systemOverview[1],
+        generatedAt: now,
+        sections: [
+          {
+            id: 'summary',
+            kind: 'stats',
+            title: '账号与工作区',
+            items: [
+              { label: '账号总数', value: 2 },
+              { label: '冷却中', value: 1, tone: 'warn', hint: '等待冷却结束' },
+              { label: '异常', value: 0, tone: 'error' },
+            ],
+          },
+          {
+            id: 'quota',
+            kind: 'quotaList',
+            title: '各账号额度',
+            items: [
+              { id: 'a1', label: '主账号', remaining: 900, total: 1000, unit: 'credits' },
+              { id: 'a2', label: '备用账号', remaining: 20, total: 1000, unit: 'credits' },
+            ],
+          },
+          {
+            id: 'hourly',
+            kind: 'series',
+            title: '今日每小时请求',
+            unit: '次',
+            buckets: [
+              { t: '08:00', values: { 请求: 5, 失败: 1 } },
+              { t: '09:00', values: { 请求: 8, 失败: 0 } },
+            ],
+          },
+          {
+            id: 'recent',
+            kind: 'table',
+            title: '最近失败',
+            columns: [
+              { key: 'at', label: '时间', kind: 'time' },
+              { key: 'account', label: '账号', kind: 'mono' },
+              { key: 'repo', label: '仓库', kind: 'link' },
+              { key: 'message', label: '原因' },
+            ],
+            rows: [
+              {
+                at: now,
+                account: 'cnb:7dde1520-0883-4f00-9a3b-2f6a1c0d4e77',
+                repo: 'Quverse12/cnb2api',
+                repoHref: 'https://cnb.cool/Quverse12/cnb2api',
+                message: '上游超时',
+              },
+            ],
+          },
+        ],
+      })
     if (path === '/api/overview')
       return json(res, 200, {
         generatedAt: now,

@@ -3,7 +3,7 @@ import { consoleApi } from './api.ts'
 import type { Channel } from './console-types.ts'
 import { parseRoute, routeHash, type PageId } from './routes.ts'
 import { registerSystems } from './systems.ts'
-export { formatNumber } from './systems.ts'
+export { formatNumber, quotaProgress, type QuotaProgress } from './systems.ts'
 const initial = parseRoute(typeof location === 'undefined' ? '' : location.hash)
 export const page = ref<PageId>(initial.page)
 export const query = ref<Record<string, string>>(initial.query)
@@ -39,8 +39,9 @@ export const channelOnline = (system: string) =>
   !['offline', 'down', 'error', 'unknown'].includes(
     channels.value.find((item) => item.system === system)?.health ?? 'unknown',
   )
-export const errorText = (error: unknown) =>
-  error instanceof Error ? error.message : '操作失败，请重试'
+export function errorText(error: unknown) {
+  return error instanceof Error ? error.message : '操作失败，请重试'
+}
 const guards = new Set<() => boolean>()
 export function useUnsavedChanges(dirty: Ref<boolean>) {
   const guard = () => unref(dirty)
