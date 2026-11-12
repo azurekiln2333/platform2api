@@ -40,7 +40,9 @@ export function entries(value, ...keys) {
   for (const key of ["items", ...keys]) if (Array.isArray(value?.[key])) return value[key];
   throw new AdapterError("渠道返回的列表格式不正确", { code: "upstream_shape" });
 }
-export const descriptor = (key, label, value, kind = "text") => ({ key, label, value: value ?? null, kind });
+// `extra` carries contract extras such as `{ href }` for `kind: "link"`
+// (ui-fixes.md §3) without every caller spelling out the whole object.
+export const descriptor = (key, label, value, kind = "text", extra = null) => ({ key, label, value: value ?? null, kind, ...(extra && typeof extra === "object" ? extra : {}) });
 export function nativeId(value) {
   const id = String(value ?? "");
   if (!id || id.length > 500 || /[\x00-\x1f\x7f]/.test(id)) throw new InputError("条目 ID 格式不正确");

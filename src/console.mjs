@@ -2,17 +2,37 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { InputError } from "./http.mjs";
 import { CHANNELS } from "./channels.mjs";
-import { describeError, buildOverview } from "./overview.mjs";
+import { buildOverview, deadline, describeError } from "./overview.mjs";
 import { consoleDayStart, entries, filters, matchesLog, method, normalizeKey, normalizeModel, normalizeLog, number, redact, splitId, unsupported, usageBucket } from "./console-data.mjs";
+import { genericSections, normalizeSections } from "./overview-sections.mjs";
+import { fanOutAccountAction, publicChannelActions } from "./channel-actions.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-const EMPTY_CAPABILITIES = { accounts: { add: [], batch: [] }, keys: { create: false, update: false, delete: false, reveal: false, rotate: false, resetUsage: false, fields: [] }, models: { toggle: false }, logs: { kinds: [], filters: [] }, usage: { extras: [] } };
+const EMPTY_CAPABILITIES = { accounts: { add: [], batch: [], channelActions: [] }, keys: { create: false, update: false, delete: false, reveal: false, rotate: false, resetUsage: false, fields: [] }, models: { toggle: false }, logs: { kinds: [], filters: [] }, usage: { extras: [] } };
 const errorOf = (system, error) => ({ system, ...redact(describeError(error)) });
 const states = (account) => account.enabled === false || account.status === "disabled" ? "disabled" : ["ready", "healthy", "ok"].includes(account.status) ? "ok" : "error";
 
-export function createConsole({ getRegistry, configurations, store, gatewayStore, origin }) {
+// ui-fixes.md §3: the console polls every 5 seconds, so the overview endpoints
+// answer from a short server-side cache and coalesce concurrent reads. A slow
+// channel is cut off on its own deadline instead of delaying the others.
+const OVERVIEW_CACHE_MS = 2000;
+const OVERVIEW_TIMEOUT_MS = 4000;
+
+export function createConsole({ getRegistry, configurations, store, gatewayStore, origin, overviewCacheMs = OVERVIEW_CACHE_MS, overviewTimeoutMs = OVERVIEW_TIMEOUT_MS }) {
   const cursors = new Map();
   const keySnapshots = new Map();
+  const overviewCache = new Map();
+  const memo = (key, loader) => {
+    const now = Date.now(), hit = overviewCache.get(key);
+    if (hit?.promise) return hit.promise;
+    if (hit && now - hit.at < overviewCacheMs) return Promise.resolve(hit.value);
+    const promise = Promise.resolve().then(loader).then(
+      (value) => { overviewCache.set(key, { at: Date.now(), value }); return value; },
+      (error) => { overviewCache.delete(key); throw error; },
+    );
+    overviewCache.set(key, { at: 0, promise });
+    return promise;
+  };
   const rememberKey = (system, item) => {
     const normalized = normalizeKey(system, item);
     keySnapshots.set(normalized.id, normalized);
@@ -34,7 +54,10 @@ export function createConsole({ getRegistry, configurations, store, gatewayStore
   async function capabilities(adapter) {
     const owner = adapter.console ?? adapter;
     const value = typeof owner.capabilities === "function" ? await owner.capabilities() : owner.capabilities;
-    return { ...structuredClone(EMPTY_CAPABILITIES), ...value, keys: { ...EMPTY_CAPABILITIES.keys, ...value?.keys, reveal: false } };
+    return { ...structuredClone(EMPTY_CAPABILITIES), ...value,
+      accounts: { ...EMPTY_CAPABILITIES.accounts, ...value?.accounts,
+        channelActions: publicChannelActions(adapter.channelActions ?? value?.accounts?.channelActions) },
+      keys: { ...EMPTY_CAPABILITIES.keys, ...value?.keys, reveal: false } };
   }
   async function channels(req) {
     const registry = await getRegistry();
@@ -92,15 +115,15 @@ export function createConsole({ getRegistry, configurations, store, gatewayStore
     return { ...redact(result), ...(result?.item ? { item: rememberKey(system, result.item) } : {}), ...(operation === "rotate" && result?.secret ? { secret: result.secret } : {}) };
   }
   const models = (query = {}) => aggregate(query.system, async (adapter, system) => entries(await method(adapter, "listModels")(), "models").map((item) => normalizeModel(system, item)));
-  async function overview() {
-    const registry = await getRegistry(), legacy = await buildOverview(registry);
+  async function loadOverview() {
+    const registry = await getRegistry(), legacy = await buildOverview(registry, { timeoutMs: overviewTimeoutMs });
     const totals = { accounts: { total: 0, ok: 0, error: 0, disabled: 0 }, requestsToday: 0, tokensToday: 0, errorsToday: 0 };
     const hourly = new Map(), attention = [], errors = [], dayStart = consoleDayStart(), now = Date.now();
     const summaries = await Promise.all(registry.systems().map(async (system) => {
       const section = legacy[system], adapter = registry.get(system);
       const accounts = { total: number(section.accounts?.total), ok: number(section.accounts?.ok ?? section.accounts?.ready), error: 0, disabled: number(section.accounts?.disabled) };
       try {
-        const rows = await adapter.listAccounts();
+        const rows = await deadline(adapter.listAccounts(), overviewTimeoutMs, `${system} 服务`);
         accounts.total = rows.length; accounts.ok = 0; accounts.error = 0; accounts.disabled = 0;
         for (const row of rows) {
           const state = states(row); accounts[state]++;
@@ -130,6 +153,57 @@ export function createConsole({ getRegistry, configurations, store, gatewayStore
         errorsToday: section.partial && section.errorsToday === null ? null : errorsToday };
     }));
     return { ...redact(legacy), totals, channels: summaries, hourly: [...hourly.values()].sort((a, b) => a.hour.localeCompare(b.hour)), attention, errors, timezone: "Asia/Shanghai" };
+  }
+  const overview = () => memo("all", loadOverview);
+
+  const sectionBuilder = (adapter) => {
+    if (typeof adapter.overviewSections === "function") return () => adapter.overviewSections();
+    if (typeof adapter.console?.overviewSections === "function") return () => adapter.console.overviewSections();
+    return null;
+  };
+
+  /**
+   * Per-channel detail blocks (ui-fixes.md §3). A channel that declares
+   * `overviewSections()` ships its own blocks; otherwise the generic builder
+   * derives them from the flat overview payload and account list. Polling reads
+   * only the service's local state — no upstream probe or quota query.
+   */
+  async function overviewSystem(system) {
+    const registry = await getRegistry();
+    targets(registry, system);
+    return memo(`system:${system}`, async () => {
+      const adapter = registry.get(system), generatedAt = new Date().toISOString();
+      try {
+        const build = sectionBuilder(adapter);
+        let sections;
+        if (build) sections = normalizeSections(await deadline(build(), overviewTimeoutMs, `${system} 服务`));
+        else {
+          const [payload, rows] = await Promise.all([
+            deadline(adapter.overview(), overviewTimeoutMs, `${system} 服务`),
+            deadline(adapter.listAccounts(), overviewTimeoutMs, `${system} 服务`).catch(() => []),
+          ]);
+          sections = normalizeSections(genericSections({ overview: payload ?? {}, accounts: rows }));
+        }
+        return redact({ system, generatedAt, sections });
+      } catch (error) {
+        const described = errorOf(system, error);
+        return { system, generatedAt, sections: [], error: { message: described.message, code: described.code } };
+      }
+    });
+  }
+
+  /** Channel-level operation declared by the adapter (ui-fixes.md §3). */
+  async function channelAction(system, action, input = {}) {
+    const registry = await getRegistry();
+    targets(registry, system);
+    const adapter = registry.get(system);
+    const definition = (Array.isArray(adapter.channelActions) ? adapter.channelActions : [])
+      .find((entry) => entry && entry.id === action);
+    if (!definition) throw new InputError("渠道操作不受支持", 404, { code: "action_unsupported" });
+    if (typeof adapter.channelAction === "function") return redact(await adapter.channelAction(action, input));
+    if (typeof definition.accountAction !== "string") return unsupported("该渠道操作");
+    const result = await fanOutAccountAction({ system, adapter, action: definition.accountAction });
+    return redact(result);
   }
   async function logs(input) {
     const query = filters(input), registry = await getRegistry(), selected = targets(registry, query.system);
@@ -223,6 +297,10 @@ export function createConsole({ getRegistry, configurations, store, gatewayStore
     const registry = await getRegistry(); targets(registry, system);
     return redact(await method(registry.get(system), "saveSettings")(input.group, input.values));
   }
-  return { channels, keys, createKey, keyOperation, models, overview, logs, logDetail, usage, settings, saveSettings,
-    invalidate: (system) => { for (const [id, key] of keySnapshots) if (key.system === system) keySnapshots.delete(id); cursors.clear(); } };
+  return { channels, keys, createKey, keyOperation, models, overview, overviewSystem, channelAction, logs, logDetail, usage, settings, saveSettings,
+    invalidate: (system) => {
+      for (const [id, key] of keySnapshots) if (key.system === system) keySnapshots.delete(id);
+      for (const key of ["all", `system:${system}`]) overviewCache.delete(key);
+      cursors.clear();
+    } };
 }

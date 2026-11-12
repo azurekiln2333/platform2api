@@ -7,6 +7,31 @@ import { isAccountNativeId } from "./account-id.mjs";
 
 const MAX_ACCOUNTS_PER_SYSTEM = 5000;
 
+const finiteNumber = (value) => (value === null || value === undefined || value === "" ? null
+  : Number.isFinite(Number(value)) ? Number(value) : null);
+
+// ui-fixes.md §3: every account quota carries `remaining`, `total` and `unit`.
+// Channels that only report `used` get `remaining` derived here so the console
+// never has to guess (and a missing value stays null instead of becoming 0).
+export function normalizeQuotaShape(quota) {
+  if (quota === null || quota === undefined) return null;
+  if (typeof quota === "number") {
+    return Number.isFinite(quota) ? { unit: null, total: null, used: null, remaining: quota } : null;
+  }
+  if (typeof quota !== "object" || Array.isArray(quota)) return null;
+  const total = finiteNumber(quota.total ?? quota.limit);
+  const used = finiteNumber(quota.used ?? quota.usage);
+  let remaining = finiteNumber(quota.remaining ?? quota.left ?? quota.available);
+  if (remaining === null && total !== null && used !== null) remaining = Math.max(0, total - used);
+  return {
+    ...quota,
+    ...(total !== null ? { total } : {}),
+    ...(used !== null ? { used } : {}),
+    ...(remaining !== null ? { remaining } : {}),
+    unit: typeof quota.unit === "string" && quota.unit ? quota.unit : (quota.unit ?? null),
+  };
+}
+
 // One unified list, one system tag per account (R11). The system tag is
 // automatic and always first so the console can render the badge without a
 // second lookup; user tags come from the panel-owned store.
@@ -27,7 +52,7 @@ export function normalizeAccount(system, entry, userTags = []) {
     label,
     status: typeof entry.status === "string" ? entry.status : "unknown",
     enabled: entry.enabled === undefined ? undefined : entry.enabled === true,
-    quota: entry.quota === undefined ? null : entry.quota,
+    quota: entry.quota === undefined ? null : normalizeQuotaShape(entry.quota),
     tags,
     systemTags: [system],
     userTags: [...userTags],

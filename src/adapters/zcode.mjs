@@ -81,7 +81,12 @@ const toEntry = (account) => {
     lastUsedAt: account?.checkedAt ?? null,
     primary: detail,
     display: [descriptor("realm", "区域", account?.group ?? account?.realm, "badge"), descriptor("identity", "身份", detail), descriptor("cooldownUntil", "冷却至", account?.cooldownUntil, "time"), descriptor("checkedAt", "最近探测", account?.checkedAt, "time"), descriptor("lastError", "最近错误", account?.lastError), descriptor("quotaSources", "额度明细", account?.quotaSources), descriptor("eligibility", "领取资格", account?.eligibility)],
-    actions: [{ id: "refresh", label: "刷新额度与资格" }, { id: "probe", label: "探测" }, { id: "claim-start", label: "准备领取" }, { id: "claim", label: "领取 Coding Plan" }],
+    actions: [
+      { id: "refresh", label: "刷新额度与资格", quick: true },
+      { id: "probe", label: "探测", quick: true },
+      { id: "claim-start", label: "准备领取" },
+      { id: "claim", label: "领取 Coding Plan" },
+    ],
     raw: redact(account ?? null),
   };
 };

@@ -88,6 +88,8 @@ export function createPanelServer(options) {
     webRoot = fileURLToPath(new URL("../web/dist/", import.meta.url)),
     sessionCookieName = "platform_session",
     oidcCookieName = "platform_oidc",
+    overviewCacheMs,
+    overviewTimeoutMs,
   } = options;
   if (!adminKey || adminKey.length < ADMIN_KEY_MIN)
     throw new Error(`PANEL_ADMIN_KEY must contain at least ${ADMIN_KEY_MIN} characters`);
@@ -124,7 +126,9 @@ export function createPanelServer(options) {
   let registryPromise = buildRegistry();
   const gatewayStore = new GatewayStore(store, systems.map((value) => value.system));
   const gateway = createGateway({ getRegistry: () => registryPromise, store: gatewayStore, logger, ...options.gateway, ...(options.inferenceFetchImpl ? { fetchImpl: options.inferenceFetchImpl } : {}) });
-  const consoleApi = createConsole({ getRegistry: () => registryPromise, configurations: systems, store, gatewayStore, origin: requestOrigin });
+  const consoleApi = createConsole({ getRegistry: () => registryPromise, configurations: systems, store, gatewayStore, origin: requestOrigin,
+    ...(overviewCacheMs !== undefined ? { overviewCacheMs } : {}),
+    ...(overviewTimeoutMs !== undefined ? { overviewTimeoutMs } : {}) });
 
   const ssoLogin = async (req, res) => {
     const sso = store.state.sso;
@@ -343,6 +347,12 @@ export function createPanelServer(options) {
     if (settingsRoute && req.method === "PATCH") return json(res, 200, await consoleApi.saveSettings(settingsRoute[2] || null, await readJsonBody(req)));
     const connectionRoute = /^\/api\/channels\/([a-z][a-z0-9_-]{0,63})\/test$/.exec(path);
     if (connectionRoute && req.method === "POST") return json(res, 200, await route(connectionRoute[1]).health());
+    const channelActionRoute = /^\/api\/channels\/([a-z][a-z0-9_-]{0,63})\/actions\/([a-z][a-z0-9-]{0,63})$/.exec(path);
+    if (channelActionRoute) {
+      if (req.method !== "POST") throw new InputError("method not allowed", 405);
+      const input = await readJsonBody(req, MAX_JSON_BYTES, { optional: true });
+      return json(res, 200, await consoleApi.channelAction(channelActionRoute[1], channelActionRoute[2], input ?? {}));
+    }
 
     if (path === "/api/keys" && req.method === "GET") return json(res, 200, await consoleApi.keys(filters(url.searchParams)));
     if (path === "/api/keys" && req.method === "POST") return json(res, 201, await consoleApi.createKey(await readJsonBody(req)));
@@ -366,6 +376,11 @@ export function createPanelServer(options) {
     if (path === "/api/usage" && req.method === "GET") return json(res, 200, await consoleApi.usage(url.searchParams));
 
     if (path === "/api/overview" && req.method === "GET") return json(res, 200, await consoleApi.overview());
+    const systemOverviewRoute = /^\/api\/overview\/([a-z][a-z0-9_-]{0,63})$/.exec(path);
+    if (systemOverviewRoute) {
+      if (req.method !== "GET") throw new InputError("method not allowed", 405);
+      return json(res, 200, await consoleApi.overviewSystem(systemOverviewRoute[1]));
+    }
 
     if (path === "/api/accounts" && req.method === "GET") {
       const result = await listAccounts(registry, store, {

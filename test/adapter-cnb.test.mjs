@@ -514,3 +514,39 @@ test("cnb adapter maps every documented account action", async (t) => {
     ],
   );
 });
+
+test("panel exposes CNB channel actions and per-channel overview blocks", async (t) => {
+  const { baseUrl, seen } = await fixture(t);
+  const { api } = await panelWithCnb(t, baseUrl);
+  const channels = await api.request("/api/channels");
+  assert.deepEqual(channels.body[0].capabilities.accounts.channelActions, [{ id: "wake-all", label: "唤醒全部工作区" }]);
+
+  const detail = await api.request("/api/overview/cnb");
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.system, "cnb");
+  const quotaList = detail.body.sections.find((section) => section.kind === "quotaList");
+  assert.equal(quotaList.items[0].remaining, 700);
+  assert.equal(quotaList.items[0].total, 1000);
+  assert.equal(quotaList.items[0].unit, "credits");
+  assert.ok(detail.body.sections.some((section) => section.id === "accounts"));
+  // Only the service's own local routes; a 404 for a missing optional route is
+  // tolerated instead of failing the section.
+  assert.ok(seen.every((record) => record.method === "GET"));
+  assert.ok(!seen.some((record) => /probe|quota$/.test(record.path)));
+
+  const wake = await api.request("/api/channels/cnb/actions/wake-all", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(wake.status, 200);
+  assert.deepEqual(wake.body, { total: 1, started: 1, failed: [] });
+  assert.ok(seen.some((record) => record.method === "POST" && record.path === "/api/accounts/acc-1/wake"));
+
+  const undeclared = await api.request("/api/channels/cnb/actions/probe-all", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(undeclared.status, 404);
+});

@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
 import { AdapterError } from "./client.mjs";
 import { InputError } from "../http.mjs";
-import { descriptor, entries, filters, iso, matchesLog, normalizeLog, number, redact, unsupported, usageBucket } from "../console-data.mjs";
+import { consoleDayStart, descriptor, entries, filters, iso, matchesLog, normalizeLog, number, redact, unsupported, usageBucket } from "../console-data.mjs";
+import { quotaListSection, seriesSection, stat, statsSection, tableSection, todayHourlySeries } from "../overview-sections.mjs";
 
 const SYSTEM = "cnb";
 const DAY_MS = 86400000;
+// Channel-level operations (ui-fixes.md §3). The panel validates the declared
+// id; CNB has no native batch wake, so it fans out per account.
+export const CNB_CHANNEL_ACTIONS = Object.freeze([
+  Object.freeze({ id: "wake-all", label: "唤醒全部工作区", accountAction: "wake" }),
+]);
+const PUBLIC_CHANNEL_ACTIONS = CNB_CHANNEL_ACTIONS.map(({ id, label }) => ({ id, label }));
 const FIELD_GROUPS = [
   { id: "scheduling", title: "调度与超时", fields: [
     { key: "strategy", label: "调度策略", type: "select", options: [{ value: "weighted", label: "按权重" }, { value: "least-connections", label: "最少连接" }, { value: "failover", label: "故障转移" }] },
@@ -76,7 +83,8 @@ export function createCnbConsole({ serviceJson }) {
       optional("/api/settings"), optional("/api/usage/history", { query: { days: 7 } }),
     ]);
     probed = {
-      accounts: { add: accounts ? ["credentials"] : [], batch: accounts ? ["enable", "disable", "probe", "tags", "delete"] : [] },
+      accounts: { add: accounts ? ["credentials"] : [], batch: accounts ? ["enable", "disable", "probe", "tags", "delete"] : [],
+        channelActions: PUBLIC_CHANNEL_ACTIONS.map((entry) => ({ ...entry })) },
       keys: { list: Boolean(access), create: false, update: false, delete: false, reveal: false, rotate: false, resetUsage: false, fields: [] },
       models: { list: Boolean(models), toggle: false },
       logs: { kinds: [...(requests ? ["request"] : []), ...(events ? ["system"] : [])], filters: requests ? ["result", "q"] : [], pagination: requests && Number.isFinite(requests.total) ? "offset" : "none" },
@@ -226,6 +234,147 @@ export function createCnbConsole({ serviceJson }) {
         partial: rows.some((row) => row.partial), range: history?.range ?? null } };
   }
 
+  // ---- Per-channel detail blocks (ui-fixes.md F12 / §3) -------------------
+  // Everything below reads the CNB service's local panel state only: no probe,
+  // no quota sync. `/api/credits/rates` and `/api/usage/history` are local
+  // aggregations, and `/api/usage/comparison` (which would describe workspace
+  // usage) is deliberately not polled.
+  const cnbState = (account) => {
+    if (!account) return "unknown";
+    if (account.enabled === false) return "disabled";
+    if (account.quotaProtection?.suspended) return "quota";
+    if (account.cooldownUntil && Date.parse(account.cooldownUntil) > Date.now()) return "cooling";
+    if (account.status === "healthy" && account.endpoint) return "healthy";
+    if (account.status === "unhealthy") return "offline";
+    return "pending";
+  };
+  const STATE_LABELS = { healthy: "正常", offline: "异常", pending: "未就绪", cooling: "冷却中", quota: "额度暂停", disabled: "已停用", unknown: "未知" };
+  const STATE_TONES = { healthy: "ok", offline: "error", pending: "muted", cooling: "warn", quota: "warn", disabled: "muted", unknown: "muted" };
+  const accountQuota = (account) => {
+    const credits = account?.quota?.credits;
+    if (!credits || !Number.isFinite(Number(credits.total))) return null;
+    const total = Number(credits.total) || 0, used = Number(credits.used) || 0, freeze = Number(credits.freeze) || 0;
+    return { unit: "credits", total, used, freeze, remaining: Math.max(0, total - used - freeze) };
+  };
+  const percent = (value) => (value === null || value === undefined ? null : Math.round(value * 10) / 10);
+
+  async function overviewSections() {
+    const data = await serviceJson("/api/overview");
+    const [history, rates] = await Promise.all([
+      optional("/api/usage/history", { query: { days: 7 } }),
+      optional("/api/credits/rates", { query: { window: "24h" } }),
+    ]);
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    const stats = data.stats && typeof data.stats === "object" ? data.stats : {};
+    const states = { healthy: 0, offline: 0, pending: 0, cooling: 0, quota: 0, disabled: 0 };
+    for (const account of accounts) states[cnbState(account)] = (states[cnbState(account)] || 0) + 1;
+    const total = Number.isFinite(stats.total) ? stats.total : accounts.length;
+    const ready = Number.isFinite(stats.ready) ? stats.ready : states.healthy;
+    const syncedAt = accounts.map((account) => account?.quota?.syncedAt).filter(Boolean).sort().at(-1) ?? null;
+    const quotas = accounts.map(accountQuota).filter(Boolean);
+    const totalCredits = quotas.reduce((sum, quota) => sum + quota.total, 0);
+    const usedCredits = quotas.reduce((sum, quota) => sum + quota.used, 0);
+    const freezeCredits = quotas.reduce((sum, quota) => sum + quota.freeze, 0);
+    const sections = [];
+
+    sections.push(statsSection("accounts", "账号与工作区", [
+      stat("账号总数", total),
+      stat("可用工作区", ready, "启用、探活通过且未在冷却中", ready ? "ok" : "muted"),
+      stat("可用比例", total ? percent((ready / total) * 100) : null, "%"),
+      stat("冷却中", states.cooling, "到冷却时间后自动重试", states.cooling ? "warn" : undefined),
+      stat("额度保护暂停", states.quota, "额度低于保护阈值", states.quota ? "warn" : undefined),
+      stat("异常工作区", states.offline, "探活未通过，需人工检查", states.offline ? "error" : undefined),
+      stat("未就绪", states.pending, "尚未完成首次探活"),
+      stat("已停用", states.disabled, undefined, states.disabled ? "muted" : undefined),
+    ].filter(Boolean)));
+
+    sections.push(statsSection("today", "今日请求", [
+      stat("今日请求", stats.requests, "按 UTC+8 自然日统计"),
+      stat("今日失败", stats.errors, undefined, stats.errors ? "error" : undefined),
+      stat("请求成功率", percent(stats.successRate), "%"),
+      stat("平均耗时", stats.averageDurationMs, "含完整流式响应时长（毫秒）"),
+      stat("进行中", stats.activeRequests, "正在处理的请求"),
+    ].filter(Boolean)));
+
+    const tokens = stats.tokenUsage?.today ?? null;
+    if (tokens)
+      sections.push(statsSection("tokens", "今日 Token 用量", [
+        stat("Tokens 合计", tokens.total, "输入 + 输出，缓存已含在输入中"),
+        stat("输入", tokens.input), stat("输出", tokens.output),
+        stat("缓存读取", tokens.cacheRead), stat("缓存写入", tokens.cacheWrite),
+        stat("已上报请求", tokens.reportedRequests),
+        stat("未上报请求", tokens.missingRequests, undefined, tokens.missingRequests ? "warn" : undefined),
+        stat("字段不完整", tokens.partialRequests, undefined, tokens.partialRequests ? "warn" : undefined),
+      ].filter(Boolean)));
+
+    sections.push(statsSection("quota", "Credits 额度", [
+      stat("剩余 Credits", Number.isFinite(stats.remainingCredits) ? stats.remainingCredits : quotas.reduce((sum, quota) => sum + quota.remaining, 0) || null, "已扣除使用与冻结额度"),
+      stat("总额度", quotas.length ? totalCredits : null, "同组织不重复累计"),
+      stat("已使用", quotas.length ? usedCredits : null),
+      stat("冻结额度", quotas.length ? freezeCredits : null, "尚未结算的占用"),
+      stat("已同步组织", stats.quotaOrganizations ?? (quotas.length || null), "个"),
+      stat("额度同步", syncedAt, "额度上次成功更新的时间"),
+    ].filter(Boolean)));
+
+    const overall = rates?.overall ?? null;
+    if (overall)
+      sections.push(statsSection("credit-rate", "Credits 单价", [
+        stat("账单估算单价", overall.billing?.rate, "Credits / 百万 tokens"),
+        stat("工作区上报单价", overall.reported?.rate, "Credits / 百万 tokens"),
+        stat("偏差", overall.deviation === null || overall.deviation === undefined ? null : percent(overall.deviation * 100), "% （上报 − 账单）"),
+        stat("剩余额度可换", overall.tokensLeft, "按当前单价估算的 Tokens"),
+        stat("统计窗口", overall.windowStart ? `自 ${iso(overall.windowStart)}` : null),
+        stat("参与估算组织", overall.organizations, "个"),
+      ].filter(Boolean)));
+
+    const quotaRows = accounts.map((account) => {
+      const quota = accountQuota(account);
+      if (!quota) return null;
+      return { id: String(account.id ?? account.name ?? ""), label: String(account.name ?? account.id ?? ""), ...quota, status: STATE_TONES[cnbState(account)] };
+    }).filter(Boolean);
+    if (quotaRows.length) sections.push(quotaListSection("account-quota", "各账号额度", quotaRows));
+
+    const buckets = todayHourlySeries(data.hourly);
+    if (buckets.length) sections.push(seriesSection("hourly", "今日每小时请求", "次", buckets));
+
+    const attention = accounts
+      .filter((account) => ["offline", "pending", "cooling", "quota"].includes(cnbState(account)))
+      .map((account) => ({
+        账号: String(account.name ?? account.id ?? ""),
+        状态: STATE_LABELS[cnbState(account)],
+        最近错误: redact(account.lastError) || "",
+        最近探活: iso(account.lastProbeAt ?? account.checkedAt) ?? "",
+        冷却至: iso(account.cooldownUntil) ?? "",
+      }));
+    if (attention.length)
+      sections.push(tableSection("attention", "最近失败与异常", [
+        { key: "账号", label: "账号", kind: "text" },
+        { key: "状态", label: "状态", kind: "badge" },
+        { key: "最近错误", label: "最近错误", kind: "text" },
+        { key: "最近探活", label: "最近探活", kind: "time" },
+        { key: "冷却至", label: "冷却至", kind: "time" },
+      ], attention));
+
+    const days = Array.isArray(history?.days) ? history.days.slice(-7) : [];
+    if (days.length)
+      sections.push(tableSection("history", "最近 7 天用量", [
+        { key: "日期", label: "日期" },
+        { key: "请求", label: "请求" },
+        { key: "失败", label: "失败" },
+        { key: "输入", label: "输入 Tokens" },
+        { key: "输出", label: "输出 Tokens" },
+        { key: "缓存读取", label: "缓存读取" },
+        { key: "缓存写入", label: "缓存写入" },
+      ], days.map((row) => ({
+        日期: String(row.date ?? ""),
+        请求: number(row.requests), 失败: number(row.errors),
+        输入: number(row.tokenUsage?.input), 输出: number(row.tokenUsage?.output),
+        缓存读取: number(row.tokenUsage?.cacheRead), 缓存写入: number(row.tokenUsage?.cacheWrite),
+      }))));
+
+    return sections;
+  }
+
   async function settings() {
     const [data, auth] = await Promise.all([optional("/api/settings"), optional("/api/auth/settings")]);
     const values = data?.settings ?? {};
@@ -265,7 +414,7 @@ export function createCnbConsole({ serviceJson }) {
     return settings();
   }
 
-  return { capabilities, listKeys, listModels, listLogs, getLog, usage, settings, saveSettings,
+  return { capabilities, overviewSections, listKeys, listModels, listLogs, getLog, usage, settings, saveSettings,
     createKey: async () => unsupported("创建多个网关密钥"), updateKey: async () => unsupported("修改内置网关密钥"),
     deleteKey: async () => unsupported("删除内置网关密钥"), keyAction: async () => unsupported("该密钥操作"),
     modelAction: async () => unsupported("修改全局模型状态"),

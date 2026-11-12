@@ -43,11 +43,28 @@ export const describeError = (error) => {
   return { message: "服务读取失败", code: "internal_error" };
 };
 
-export async function systemOverview(adapter) {
+// A polled overview must not wait on one slow channel (ui-fixes.md §3). Each
+// channel read gets its own deadline; the timeout is an ordinary AdapterError so
+// the channel shows a retryable reason instead of stalling the whole page.
+export function deadline(promise, ms, what = "渠道") {
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new AdapterError(`${what}响应超时`, { code: "upstream_timeout" })),
+      ms,
+    );
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+export async function systemOverview(adapter, { timeoutMs = 0 } = {}) {
   let health = "unknown";
   let detail = "";
   try {
-    const probe = await adapter.health();
+    const probe = await deadline(adapter.health(), timeoutMs, `${adapter.system} 服务`);
     health = normalizeHealth(probe);
     detail = typeof probe?.detail === "string" ? probe.detail : "";
   } catch (error) {
@@ -56,7 +73,7 @@ export async function systemOverview(adapter) {
   }
 
   try {
-    const payload = await adapter.overview();
+    const payload = await deadline(adapter.overview(), timeoutMs, `${adapter.system} 服务`);
     // Flat payload: adapter fields (accounts/quota/usage/generatedAt/...) stay
     // top-level, never nested under an `overview` key (design.md).
     const available = payload && typeof payload === "object" ? payload : {};
@@ -83,12 +100,12 @@ export async function systemOverview(adapter) {
   }
 }
 
-export async function buildOverview(registry) {
+export async function buildOverview(registry, { timeoutMs = 0 } = {}) {
   const systems = registry.systems();
   // Systems are independent: a slow or broken service must not hide the others.
   const sections = await Promise.all(
     systems.map((system) =>
-      systemOverview(registry.get(system)).catch((error) => {
+      systemOverview(registry.get(system), { timeoutMs }).catch((error) => {
         const described = describeError(error);
         return {
           system,

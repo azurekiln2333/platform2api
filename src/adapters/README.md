@@ -137,7 +137,10 @@ Probe with read-only calls; an authentication failure is not missing support.
 Use `src/console-data.mjs` for normalization/redaction. List responses are
 `{ items, errors: [{ system, message, code }] }`; native IDs gain a channel
 prefix at the boundary. Account display descriptors use `text`, `mono`,
-`time`, `badge`, `quota` or `bool`. Settings fields are schema-driven.
+`time`, `badge`, `quota`, `bool` or `link` (with `href`, opened in a new tab).
+Account actions may set `quick: true` for the card's inline shortcuts (at most
+three are shown; the rest go into the overflow menu). Settings fields are
+schema-driven.
 Create/rotate return `{ item, secret }` once; other reads never return secrets.
 Versioned mutations forward the caller's `revision`; do not refresh/retry a
 stale version before saving. Clients should return revisions on every write.
@@ -149,6 +152,33 @@ bounded opaque cursors. Usage should return `excludesInternalKeys: true` only
 when `excludeKeys` was applied to every returned counter; the panel then adds
 unified counters back once. Otherwise native totals already include forwarded
 traffic and unified attribution stays in `extras.unified` / `byKey`.
+
+## Per-channel overview blocks and channel actions
+
+Two optional members let a channel describe itself without the console knowing
+the vendor (ui-fixes.md §3):
+
+- `overviewSections()` → `Array<section>` for `GET /api/overview/:system`.
+  The panel normalizes each block and drops anything malformed; a channel
+  without this method gets generic blocks derived from `overview()` and
+  `listAccounts()`. Block kinds: `stats` `{ items: [{ label, value, hint?, tone? }] }`,
+  `quotaList` `{ items: [{ id, label, remaining, total, unit, status? }] }`,
+  `series` `{ unit, buckets: [{ t, values }] }` and `table` `{ columns, rows }`.
+  `tone`/`status` are `ok | warn | error | muted`. This runs on a polled
+  endpoint, so it may only read the service's **local** state — never trigger an
+  upstream probe, quota sync or workspace usage refresh. The panel adds a ~2s
+  cache with request coalescing and a per-channel deadline.
+- `channelActions` → `Array<{ id, label, accountAction? }>` plus an optional
+  native `channelAction(action, payload)`. The panel exposes only `{ id, label }`
+  in `capabilities.accounts.channelActions` and routes
+  `POST /api/channels/:system/actions/:action`. Without a native batch method it
+  fans out `accountAction` over enabled accounts (concurrency ≤ 4, disabled
+  accounts skipped) and answers `{ total, started, failed: [{ id, label, message }] }`.
+
+```js
+// CNB: no native batch wake, so the panel fans out per account.
+channelActions: [{ id: "wake-all", label: "唤醒全部工作区", accountAction: "wake" }]
+```
 
 ## Inference methods
 

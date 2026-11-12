@@ -5,7 +5,7 @@ import { AdapterError } from "../src/adapters/client.mjs";
 
 const NOW = "2026-11-11T08:00:00.000Z";
 const ID = "00000000-0000-4000-8000-000000000001";
-const fixture = ({ missing = [], fail = {}, legacyLogs = false, logs: initialLogs, history: suppliedHistory } = {}) => {
+const fixture = ({ missing = [], fail = {}, legacyLogs = false, logs: initialLogs, history: suppliedHistory, overview: suppliedOverview } = {}) => {
   const seen = [];
   const settings = { strategy: "weighted", sessionAffinity: true, maxAttempts: 3, cooldownSeconds: 60,
     healthIntervalSeconds: 60, connectTimeoutSeconds: 20, idleTimeoutSeconds: 300, dshCompat: true,
@@ -43,7 +43,7 @@ const fixture = ({ missing = [], fail = {}, legacyLogs = false, logs: initialLog
       return reply(legacyLogs ? { logs: matching } : { logs: matching.slice(offset, offset + limit), total: matching.length, offset, limit });
     }
     if (path.startsWith("/api/logs/requests/")) return reply({ log: logs.find((row) => row.id === decodeURIComponent(path.split("/").at(-1))) });
-    if (path === "/api/overview") return reply({ hourly: [{ at: NOW, requests: 3, tokenUsage: { input: 50, output: 6 } }], creditRates: { window: "24h" } });
+    if (path === "/api/overview") return reply(suppliedOverview ?? { hourly: [{ at: NOW, requests: 3, tokenUsage: { input: 50, output: 6 } }], creditRates: { window: "24h" } });
     if (path === "/api/usage/history") return reply(history);
     if (path === "/api/credits/rates") return reply({ window: options.query?.window, rows: [{ accountId: "a1", rate: 5 }] });
     if (path === "/api/usage/comparison") return reply({ accounts: [{ accountId: "a1", measured: 4 }] });
@@ -203,4 +203,58 @@ test("CNB inference descriptor and internal credential bootstrap match actual ro
   assert.equal(seen.at(-1).path, "/api/access/key");
   assert.equal(seen.at(-1).method, "POST");
   assert.equal(JSON.stringify(await adapter.console.listKeys()).includes(credential.secret), false);
+});
+
+test("CNB declares wake-all as a channel action and marks card quick actions", async () => {
+  const { adapter, api } = fixture();
+  assert.deepEqual(adapter.channelActions.map((entry) => [entry.id, entry.accountAction]), [["wake-all", "wake"]]);
+  assert.deepEqual((await api.capabilities()).accounts.channelActions, [{ id: "wake-all", label: "唤醒全部工作区" }]);
+  const [account] = await adapter.listAccounts();
+  assert.deepEqual(account.actions.filter((action) => action.quick).map((action) => action.id), ["probe", "quota", "wake"]);
+  const repo = account.display.find((field) => field.key === "repo");
+  assert.equal(repo.kind, "link");
+  assert.equal(repo.href, "https://cnb.cool/org/repo");
+});
+
+test("CNB overview sections mirror the native overview without probing upstream", async () => {
+  const now = Date.now();
+  const { api, seen } = fixture({
+    overview: {
+      accounts: [
+        { id: "a1", name: "Account 1", status: "healthy", enabled: true, endpoint: "https://workspace.test",
+          repo: "org/repo", quota: { credits: { total: 100, used: 20, freeze: 5 }, syncedAt: NOW } },
+        { id: "a2", name: "Account 2", status: "unhealthy", enabled: true, repo: "org/repo2", lastError: "Bearer workspace-secret",
+          quota: { credits: { total: 50, used: 10, freeze: 0 } } },
+        { id: "a3", name: "Account 3", status: "pending", enabled: false },
+      ],
+      stats: { total: 3, ready: 1, cooling: 0, requests: 12, errors: 2, successRate: 83.3, averageDurationMs: 450,
+        activeRequests: 1, remainingCredits: 75, quotaOrganizations: 1,
+        tokenUsage: { today: { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, total: 120,
+          reportedRequests: 4, missingRequests: 1, partialRequests: 0 }, total: {}, startedAt: NOW } },
+      hourly: [{ at: new Date(now).toISOString(), requests: 12, errors: 2 }],
+    },
+  });
+  const sections = await api.overviewSections();
+  const byId = Object.fromEntries(sections.map((section) => [section.id, section]));
+  assert.deepEqual(Object.keys(byId).sort(),
+    ["account-quota", "accounts", "attention", "history", "hourly", "quota", "today", "tokens"]);
+  const metric = (id, label) => byId[id].items.find((item) => item.label === label);
+  assert.equal(metric("accounts", "可用工作区").value, 1);
+  assert.equal(metric("accounts", "可用比例").value, 33.3);
+  assert.equal(metric("accounts", "已停用").value, 1);
+  assert.equal(metric("today", "请求成功率").value, 83.3);
+  assert.equal(metric("tokens", "未上报请求").tone, "warn");
+  assert.equal(metric("quota", "剩余 Credits").value, 75);
+  assert.equal(byId["account-quota"].items[0].remaining, 75);
+  assert.equal(byId["account-quota"].items[0].status, "ok");
+  assert.equal(byId["account-quota"].items[1].status, "error");
+  assert.deepEqual(byId.hourly.buckets.at(-1).values, { 请求: 12, 失败: 2 });
+  assert.deepEqual(byId.attention.rows.map((row) => row["账号"]), ["Account 2"]);
+  assert.deepEqual(byId.attention.columns.map((column) => column.kind), ["text", "badge", "text", "time", "time"]);
+  assert.equal(byId.attention.rows[0]["最近错误"], "Bearer [REDACTED]");
+  assert.equal(byId.history.rows.length, 2);
+  // Only the service's own local read routes are touched: no probe, no quota sync.
+  assert.deepEqual([...new Set(seen.map((call) => call.path))].sort(),
+    ["/api/credits/rates", "/api/overview", "/api/usage/history"]);
+  assert.ok(seen.every((call) => !call.method || call.method === "GET"));
 });

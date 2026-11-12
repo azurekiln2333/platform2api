@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { AdapterError } from "./client.mjs";
 import { InputError } from "../http.mjs";
 import { descriptor, redact } from "../console-data.mjs";
-import { createCnbConsole } from "./cnb-console.mjs";
+import { createCnbConsole, CNB_CHANNEL_ACTIONS } from "./cnb-console.mjs";
 
 // CNB adapter: one service (`cnb2api-panel`) reached over its existing
 // management routes. Contract: ./README.md. Every request carries
@@ -81,37 +81,48 @@ export const accountState = (account) => {
   return "pending";
 };
 
-const toEntry = (account) => ({
-  nativeId: String(account?.id ?? ""),
-  label: String(account?.name ?? account?.id ?? "").slice(0, 200),
-  status: accountState(account),
-  enabled: account?.enabled !== false,
-  quota: normalizeQuota(account),
-  tags: [SYSTEM],
-  lastUsedAt: account?.lastUsedAt ?? account?.lastRequestAt ?? null,
-  primary: String(account?.repo || account?.endpoint || ""),
-  display: [
-    descriptor("repo", "仓库", account?.repo, "mono"),
-    descriptor("endpoint", "工作区地址", redact(account?.endpoint), "mono"),
-    descriptor("upstreamMode", "上游模式", account?.upstreamMode, "badge"),
-    descriptor("priority", "优先级", account?.priority),
-    descriptor("models", "模型", Array.isArray(account?.models) ? account.models.join("、") : null),
-    descriptor("quota", "额度", normalizeQuota(account), "quota"),
-    descriptor("quotaSyncedAt", "额度同步时间", account?.quota?.syncedAt, "time"),
-    descriptor("lastProbeAt", "最近探活", account?.lastProbeAt, "time"),
-    descriptor("lastError", "最近错误", redact(account?.lastError)),
-    descriptor("cooldownUntil", "冷却截止", account?.cooldownUntil, "time"),
-    descriptor("hasPat", "已保存个人令牌", account?.hasPat, "bool"),
-    descriptor("hasProxyKey", "已保存工作区密钥", account?.hasProxyKey, "bool"),
-  ],
-  actions: [
-    { id: "probe", label: "探测账号" }, { id: "inference-probe", label: "探测推理" },
-    { id: "quota", label: "同步额度" }, { id: "wake", label: "启动工作区" },
-    { id: account?.enabled === false ? "enable" : "disable", label: account?.enabled === false ? "启用账号" : "停用账号" },
-    { id: "delete", label: "删除账号", danger: true, confirm: `删除账号「${account?.name || account?.id || ""}」` },
-  ],
-  raw: account ? redact(Object.fromEntries(Object.entries(account).filter(([key]) => !["secrets", "registrationToken", "credentials"].includes(key)))) : null,
-});
+/** Repository homepage used by the original panel (`https://cnb.cool/<org>/<repo>`). */
+export const repoUrl = (repo) => {
+  const value = typeof repo === "string" ? repo.trim().replace(/^\/+/, "") : "";
+  return value ? `https://cnb.cool/${value}` : null;
+};
+
+const toEntry = (account) => {
+  const href = repoUrl(account?.repo);
+  return {
+    nativeId: String(account?.id ?? ""),
+    label: String(account?.name ?? account?.id ?? "").slice(0, 200),
+    status: accountState(account),
+    enabled: account?.enabled !== false,
+    quota: normalizeQuota(account),
+    tags: [SYSTEM],
+    lastUsedAt: account?.lastUsedAt ?? account?.lastRequestAt ?? null,
+    primary: String(account?.repo || account?.endpoint || ""),
+    display: [
+      descriptor("repo", "仓库", account?.repo, href ? "link" : "mono", href ? { href } : undefined),
+      descriptor("endpoint", "工作区地址", redact(account?.endpoint), "mono"),
+      descriptor("upstreamMode", "上游模式", account?.upstreamMode, "badge"),
+      descriptor("priority", "优先级", account?.priority),
+      descriptor("models", "模型", Array.isArray(account?.models) ? account.models.join("、") : null),
+      descriptor("quota", "额度", normalizeQuota(account), "quota"),
+      descriptor("quotaSyncedAt", "额度同步时间", account?.quota?.syncedAt, "time"),
+      descriptor("lastProbeAt", "最近探活", account?.lastProbeAt, "time"),
+      descriptor("lastError", "最近错误", redact(account?.lastError)),
+      descriptor("cooldownUntil", "冷却截止", account?.cooldownUntil, "time"),
+      descriptor("hasPat", "已保存个人令牌", account?.hasPat, "bool"),
+      descriptor("hasProxyKey", "已保存工作区密钥", account?.hasProxyKey, "bool"),
+    ],
+    actions: [
+      { id: "probe", label: "探测账号", quick: true },
+      { id: "inference-probe", label: "探测推理" },
+      { id: "quota", label: "同步额度", quick: true },
+      { id: "wake", label: "启动工作区", quick: true },
+      { id: account?.enabled === false ? "enable" : "disable", label: account?.enabled === false ? "启用账号" : "停用账号" },
+      { id: "delete", label: "删除账号", danger: true, confirm: `删除账号「${account?.name || account?.id || ""}」` },
+    ],
+    raw: account ? redact(Object.fromEntries(Object.entries(account).filter(([key]) => !["secrets", "registrationToken", "credentials"].includes(key)))) : null,
+  };
+};
 
 export default function createCnbAdapter(context = {}) {
   const { client, baseUrl, token = "" } = context;
@@ -398,6 +409,7 @@ export default function createCnbAdapter(context = {}) {
     completeAuth,
     call,
     console: consoleApi,
+    channelActions: CNB_CHANNEL_ACTIONS.map((entry) => ({ ...entry })),
     keyManagement: { revealPaths: ["/api/access/key"] },
     capabilities: consoleApi.capabilities,
     inference: () => ({ url: baseUrl, routes: ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/messages/count_tokens"] }),
